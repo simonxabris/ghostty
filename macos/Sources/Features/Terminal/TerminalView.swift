@@ -74,6 +74,12 @@ protocol TerminalViewModel: ObservableObject {
 
     /// Close a tab in the main panel.
     func closeMainPanelTab(id: UUID)
+
+    /// Active running process entries grouped by project.
+    var runningProcessesByProjectID: [UUID: [RunningProcessItem]] { get }
+
+    /// Active running process count for a project.
+    func runningProcessCount(for projectID: UUID) -> Int
 }
 
 struct ProjectSidebarItem: Identifiable, Codable, Hashable {
@@ -86,6 +92,15 @@ struct ProjectSidebarItem: Identifiable, Codable, Hashable {
 struct MainPanelTabItem: Identifiable, Hashable {
     var id: UUID
     var title: String
+}
+
+struct RunningProcessItem: Identifiable, Hashable {
+    var id: UUID
+    var projectID: UUID
+    var tabID: UUID
+    var tabTitle: String
+    var primaryText: String
+    var secondaryText: String?
 }
 
 /// The main terminal view. This terminal view supports splits.

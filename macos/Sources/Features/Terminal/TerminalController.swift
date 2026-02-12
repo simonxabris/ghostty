@@ -76,6 +76,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     private var mainPanelTabStates: [MainPanelTabState] = []
     private var mainPanelTabStatesByWorkspace: [MainPanelWorkspaceKey: [MainPanelTabState]] = [:]
     private var selectedMainPanelTabIDByWorkspace: [MainPanelWorkspaceKey: UUID] = [:]
+    private var runningProcessRefreshTimer: Timer?
 
     override var showsProjectSidebar: Bool { true }
 
@@ -157,6 +158,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             name: .ghosttyCloseWindow,
             object: nil
         )
+
+        startRunningProcessRefreshTimer()
+        refreshRunningProcesses()
     }
     
     required init?(coder: NSCoder) {
@@ -164,6 +168,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
     
     deinit {
+        runningProcessRefreshTimer?.invalidate()
+        runningProcessRefreshTimer = nil
+
         // Remove all of our notificationcenter subscriptions
         let center = NotificationCenter.default
         center.removeObserver(self)
@@ -186,9 +193,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         if !to.isEmpty {
             syncActiveMainPanelTabState()
             refreshMainPanelTabs()
+            refreshRunningProcesses()
             return
         }
 
+        refreshRunningProcesses()
         closeTabImmediately()
     }
     
@@ -234,6 +243,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             applySelectedMainPanelTabState()
             persistCurrentMainPanelWorkspaceState()
             refreshMainPanelTabs()
+            refreshRunningProcesses()
             return
         }
 
@@ -246,6 +256,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         activateProjectSurfaceTree(createdTree)
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     override func addProjectSidebarItem() {
@@ -289,6 +300,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     override func addMainPanelTab() {
@@ -359,22 +371,29 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             if let startupProject {
                 selectedProjectSidebarItemID = startupProject.id
             }
+            refreshRunningProcesses()
             return
         }
 
         guard let initialProject = startupProject ?? storedProjects.first else {
             selectedProjectSidebarItemID = nil
+            refreshRunningProcesses()
             return
         }
 
         selectedProjectSidebarItemID = initialProject.id
 
         if !startupPath.isEmpty {
+            refreshRunningProcesses()
             return
         }
 
-        guard let initialTree = makeProjectSurfaceTree(for: initialProject) else { return }
+        guard let initialTree = makeProjectSurfaceTree(for: initialProject) else {
+            refreshRunningProcesses()
+            return
+        }
         activateProjectSurfaceTree(initialTree)
+        refreshRunningProcesses()
     }
 
     private func bootstrapMainPanelTabs() {
@@ -386,6 +405,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         selectedMainPanelTabID = initialState.id
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     private func selectedMainPanelTabIndex() -> Int? {
@@ -405,6 +425,140 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         workspaceKey(for: selectedProjectSidebarItemID)
     }
 
+    private func startRunningProcessRefreshTimer() {
+        runningProcessRefreshTimer?.invalidate()
+        runningProcessRefreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refreshRunningProcesses()
+        }
+    }
+
+    private func isRunningSurface(_ surface: Ghostty.SurfaceView) -> Bool {
+        surface.needsConfirmQuit && !surface.processExited
+    }
+
+    private func workspaceProjectID(for key: MainPanelWorkspaceKey) -> UUID? {
+        switch key {
+        case .project(let projectID):
+            return projectID
+        case .unscoped:
+            return nil
+        }
+    }
+
+    private func runningItems(
+        for workspaceKey: MainPanelWorkspaceKey,
+        tabStates: [MainPanelTabState]
+    ) -> [RunningProcessItem] {
+        guard let projectID = workspaceProjectID(for: workspaceKey) else { return [] }
+
+        struct Candidate {
+            var item: RunningProcessItem
+            var tabIndex: Int
+            var surfaceOrder: Int
+            var focusInstant: ContinuousClock.Instant?
+        }
+
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(tabStates.count)
+
+        for (tabIndex, state) in tabStates.enumerated() {
+            let tabTitle: String = {
+                if let surface = state.surfaceTree.root?.leftmostLeaf() {
+                    if !surface.title.isEmpty {
+                        return surface.title
+                    }
+
+                    if let pwd = surface.pwd?.abbreviatedPath, !pwd.isEmpty {
+                        return pwd
+                    }
+                }
+
+                if tabStates.count == 1,
+                   let project = projectSidebarItems.first(where: { $0.id == projectID }) {
+                    return project.name
+                }
+
+                return "Tab \(tabIndex + 1)"
+            }()
+
+            for (surfaceOrder, surface) in state.surfaceTree.enumerated() where isRunningSurface(surface) {
+                let primaryText = surface.title.isEmpty ? tabTitle : surface.title
+                let secondaryText = surface.pwd?.abbreviatedPath
+                candidates.append(.init(
+                    item: .init(
+                        id: surface.id,
+                        projectID: projectID,
+                        tabID: state.id,
+                        tabTitle: tabTitle,
+                        primaryText: primaryText,
+                        secondaryText: secondaryText
+                    ),
+                    tabIndex: tabIndex,
+                    surfaceOrder: surfaceOrder,
+                    focusInstant: surface.focusInstant
+                ))
+            }
+        }
+
+        candidates.sort { lhs, rhs in
+            if lhs.tabIndex != rhs.tabIndex {
+                return lhs.tabIndex < rhs.tabIndex
+            }
+
+            switch (lhs.focusInstant, rhs.focusInstant) {
+            case let (l?, r?) where l != r:
+                return l > r
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                break
+            }
+
+            return lhs.surfaceOrder < rhs.surfaceOrder
+        }
+
+        return candidates.map(\.item)
+    }
+
+    private func refreshRunningProcesses() {
+        var statesByWorkspace = mainPanelTabStatesByWorkspace
+        statesByWorkspace[activeMainPanelWorkspaceKey] = mainPanelTabStates
+
+        var result: [UUID: [RunningProcessItem]] = [:]
+        var visitedProjects: Set<UUID> = []
+
+        for project in projectSidebarItems {
+            let workspaceKey: MainPanelWorkspaceKey = .project(project.id)
+            guard let states = statesByWorkspace[workspaceKey], !states.isEmpty else { continue }
+            let items = runningItems(for: workspaceKey, tabStates: states)
+            if !items.isEmpty {
+                result[project.id] = items
+            }
+            visitedProjects.insert(project.id)
+        }
+
+        let extraProjectKeys = statesByWorkspace.keys.compactMap { key -> UUID? in
+            guard case .project(let projectID) = key else { return nil }
+            guard !visitedProjects.contains(projectID) else { return nil }
+            return projectID
+        }.sorted { $0.uuidString < $1.uuidString }
+
+        for projectID in extraProjectKeys {
+            let workspaceKey: MainPanelWorkspaceKey = .project(projectID)
+            guard let states = statesByWorkspace[workspaceKey], !states.isEmpty else { continue }
+            let items = runningItems(for: workspaceKey, tabStates: states)
+            if !items.isEmpty {
+                result[projectID] = items
+            }
+        }
+
+        if runningProcessesByProjectID != result {
+            runningProcessesByProjectID = result
+        }
+    }
+
     private func persistCurrentMainPanelWorkspaceState() {
         let key = activeMainPanelWorkspaceKey
         mainPanelTabStatesByWorkspace[key] = mainPanelTabStates
@@ -419,6 +573,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard let index = selectedMainPanelTabIndex() else { return }
         mainPanelTabStates[index].surfaceTree = surfaceTree
         persistCurrentMainPanelWorkspaceState()
+        refreshRunningProcesses()
     }
 
     private func applyMainPanelTabState(_ state: MainPanelTabState) {
@@ -486,6 +641,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         activateProjectSurfaceTree(newTree)
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
 
         DispatchQueue.main.async { [weak self] in
             guard let window = self?.window else { return }
@@ -521,6 +677,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     private func tabNeedsCloseConfirmation(_ state: MainPanelTabState) -> Bool {
@@ -595,6 +752,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         applySelectedMainPanelTabState()
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     private func activateProjectSurfaceTree(_ tree: SplitTree<Ghostty.SurfaceView>) {
@@ -637,6 +795,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         refreshProjectSidebarGitBranches(for: [project.id])
         selectProjectSidebarItem(id: project.id)
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     private func refreshProjectSidebarGitBranches(for projectIDs: [UUID]? = nil) {
@@ -1096,6 +1255,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     private func closeTabsOnTheRightImmediately() {
@@ -1106,6 +1266,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         mainPanelTabStates.removeSubrange((currentIndex + 1)..<mainPanelTabStates.count)
         persistCurrentMainPanelWorkspaceState()
         refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     /// Closes the current window (including any other tabs) immediately and without

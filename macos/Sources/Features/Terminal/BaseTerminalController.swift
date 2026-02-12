@@ -67,6 +67,9 @@ class BaseTerminalController: NSWindowController,
     /// Active tab selection for the main panel.
     @Published var selectedMainPanelTabID: UUID? = nil
 
+    /// Active running process entries grouped by project.
+    @Published var runningProcessesByProjectID: [UUID: [RunningProcessItem]] = [:]
+
     /// Controls whether the project sidebar is rendered at all.
     var showsProjectSidebar: Bool { false }
 
@@ -325,6 +328,10 @@ class BaseTerminalController: NSWindowController,
 
     /// Override in subclasses that implement main panel tabs.
     func closeMainPanelTab(id: UUID) {}
+
+    func runningProcessCount(for projectID: UUID) -> Int {
+        runningProcessesByProjectID[projectID]?.count ?? 0
+    }
 
     /// Called when the surfaceTree variable changed.
     ///

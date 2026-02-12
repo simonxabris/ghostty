@@ -323,10 +323,31 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(viewModel.projectSidebarItems) { project in
                             let isSelected = viewModel.selectedProjectSidebarItemID == project.id
-                            ProjectSidebarRowView(
-                                viewModel: viewModel,
-                                project: project,
-                                isSelected: isSelected
+                            let runningItems = viewModel.runningProcessesByProjectID[project.id] ?? []
+                            VStack(alignment: .leading, spacing: 0) {
+                                ProjectSidebarRowView(
+                                    viewModel: viewModel,
+                                    project: project,
+                                    runningCount: viewModel.runningProcessCount(for: project.id)
+                                )
+                                if !runningItems.isEmpty {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        ForEach(runningItems) { item in
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(item.primaryText)
+                                                    .font(.system(size: 11, weight: .medium))
+                                                    .foregroundStyle(.primary)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                    }
+                                    .padding(.leading, 12)
+                                    .padding(.bottom, 4)
+                                }
+                            }
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
                             )
                         }
                     }
@@ -363,7 +384,7 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
 private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
     @ObservedObject var viewModel: ViewModel
     var project: ProjectSidebarItem
-    var isSelected: Bool
+    var runningCount: Int
     @State private var isHovered: Bool = false
 
     var body: some View {
@@ -371,41 +392,51 @@ private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
             Button {
                 viewModel.selectProjectSidebarItem(id: project.id)
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(project.name)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(project.gitBranch ?? project.path.abbreviatedPath)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                HStack(alignment: .top, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(project.name)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(project.gitBranch ?? project.path.abbreviatedPath)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 8)
                 .padding(.trailing, isHovered ? 24 : 8)
                 .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
-                )
                 .animation(.easeInOut(duration: 0.12), value: isHovered)
             }
             .buttonStyle(.plain)
 
-            Button {
-                viewModel.removeProjectSidebarItem(id: project.id)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .frame(width: 14, height: 14)
+            if isHovered {
+                Button {
+                    viewModel.removeProjectSidebarItem(id: project.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(project.name)")
+                .padding(.trailing, 8)
+                .transition(.opacity)
+            } else if runningCount > 0 {
+                Text("\(runningCount)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.accentColor.opacity(0.2))
+                    )
+                    .padding(.trailing, 8)
+                    .transition(.opacity)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(project.name)")
-            .padding(.trailing, 8)
-            .opacity(isHovered ? 1 : 0)
-            .allowsHitTesting(isHovered)
-            .animation(.easeInOut(duration: 0.12), value: isHovered)
         }
         .onHover { hovering in
             isHovered = hovering
