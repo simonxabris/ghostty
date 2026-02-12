@@ -185,8 +185,29 @@ private struct TerminalWorkspaceView<ViewModel: TerminalViewModel>: View {
 
 private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
     @ObservedObject var viewModel: ViewModel
+    private let expandedWidth: CGFloat = 220
+    private let collapsedWidth: CGFloat = 32
+    private let sidebarAnimation: Animation = .easeInOut(duration: 0.2)
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            if !viewModel.projectSidebarIsCollapsed {
+                expandedSidebar
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            if viewModel.projectSidebarIsCollapsed {
+                collapsedSidebar
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
+        .clipped()
+        .frame(width: viewModel.projectSidebarIsCollapsed ? collapsedWidth : expandedWidth)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+        .animation(sidebarAnimation, value: viewModel.projectSidebarIsCollapsed)
+    }
+
+    private var expandedSidebar: some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Projects")
@@ -194,6 +215,15 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                     .textCase(.uppercase)
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button {
+                    viewModel.toggleProjectSidebarCollapsed()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Collapse Project Sidebar")
                 Button {
                     viewModel.addProjectSidebarItem()
                 } label: {
@@ -250,7 +280,27 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                 }
             }
         }
-        .frame(minWidth: 220, idealWidth: 220, maxWidth: 220, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var collapsedSidebar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    viewModel.toggleProjectSidebarCollapsed()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Expand Project Sidebar")
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 10)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

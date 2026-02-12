@@ -58,6 +58,9 @@ class BaseTerminalController: NSWindowController,
     /// Active selection in the project sidebar.
     @Published var selectedProjectSidebarItemID: UUID? = nil
 
+    /// Whether the project sidebar is collapsed to a narrow toggle rail.
+    @Published var projectSidebarIsCollapsed: Bool = false
+
     /// Controls whether the project sidebar is rendered at all.
     var showsProjectSidebar: Bool { false }
 
@@ -290,6 +293,20 @@ class BaseTerminalController: NSWindowController,
 
     /// Override in subclasses that implement a project sidebar.
     func addProjectSidebarItem() {}
+
+    /// Override in subclasses that implement a project sidebar.
+    func toggleProjectSidebarCollapsed() {
+        guard showsProjectSidebar else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            projectSidebarIsCollapsed.toggle()
+        }
+
+        if let focusedSurface {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: focusedSurface)
+            }
+        }
+    }
 
     /// Called when the surfaceTree variable changed.
     ///

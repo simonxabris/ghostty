@@ -39,6 +39,9 @@ protocol TerminalViewModel: ObservableObject {
     /// Whether to show the project sidebar in the terminal workspace.
     var showsProjectSidebar: Bool { get }
 
+    /// Whether the project sidebar is currently collapsed.
+    var projectSidebarIsCollapsed: Bool { get }
+
     /// The list of projects shown in the sidebar.
     var projectSidebarItems: [ProjectSidebarItem] { get }
 
@@ -50,6 +53,9 @@ protocol TerminalViewModel: ObservableObject {
 
     /// Show the picker for adding a new project.
     func addProjectSidebarItem()
+
+    /// Collapse or expand the project sidebar.
+    func toggleProjectSidebarCollapsed()
 }
 
 struct ProjectSidebarItem: Identifiable, Codable, Hashable {
