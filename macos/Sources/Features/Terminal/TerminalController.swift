@@ -6,6 +6,8 @@ import GhosttyKit
 
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
+    private static let projectSidebarStorageKey = "com.mitchellh.ghostty.projects.sidebar.v1"
+
     override var windowNibName: NSNib.Name? {
         let defaultValue = "Terminal"
         
@@ -60,7 +62,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     
     /// This will be set to the initial frame of the window from the xib on load.
     private var initialFrame: NSRect? = nil
-    
+
+    private var projectSurfaceTrees: [UUID: SplitTree<Ghostty.SurfaceView>] = [:]
+
+    override var showsProjectSidebar: Bool { true }
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -77,6 +83,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         self.derivedConfig = DerivedConfig(ghostty.config)
         
         super.init(ghostty, baseConfig: base, surfaceTree: tree)
+
+        bootstrapProjectSidebar(
+            withBaseConfig: base,
+            preserveCurrentSurfaceTree: tree != nil
+        )
         
         // Setup our notifications for behaviors
         let center = NotificationCenter.default
@@ -183,6 +194,173 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             moveFocusTo: newView,
             moveFocusFrom: oldView,
             undoAction: undoAction)
+    }
+
+    override func selectProjectSidebarItem(id: UUID) {
+        guard selectedProjectSidebarItemID != id else { return }
+        guard let project = projectSidebarItems.first(where: { $0.id == id }) else { return }
+
+        if let currentProjectID = selectedProjectSidebarItemID {
+            projectSurfaceTrees[currentProjectID] = surfaceTree
+        }
+
+        let nextTree: SplitTree<Ghostty.SurfaceView>
+        if let existingTree = projectSurfaceTrees[id] {
+            nextTree = existingTree
+        } else {
+            guard let createdTree = makeProjectSurfaceTree(for: project) else { return }
+            projectSurfaceTrees[id] = createdTree
+            nextTree = createdTree
+        }
+
+        selectedProjectSidebarItemID = id
+        activateProjectSurfaceTree(nextTree)
+    }
+
+    override func addProjectSidebarItem() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Add Project"
+        panel.message = "Choose a directory to add to the project sidebar."
+        panel.prompt = "Add Project"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addProjectSidebarItem(path: url.path)
+    }
+
+    private func bootstrapProjectSidebar(
+        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration?,
+        preserveCurrentSurfaceTree: Bool
+    ) {
+        var storedProjects = Self.loadPersistedProjectSidebarItems()
+        let startupPath = normalizedProjectPath(baseConfig?.workingDirectory ?? "")
+        var startupProject: ProjectSidebarItem?
+
+        if !startupPath.isEmpty {
+            if let existingProject = storedProjects.first(
+                where: { projectPathKey($0.path) == projectPathKey(startupPath) }
+            ) {
+                startupProject = existingProject
+            } else {
+                let newProject = ProjectSidebarItem(
+                    id: UUID(),
+                    name: projectNameFromPath(startupPath),
+                    path: startupPath
+                )
+                storedProjects.append(newProject)
+                Self.persistProjectSidebarItems(storedProjects)
+                startupProject = newProject
+            }
+        }
+
+        projectSidebarItems = storedProjects
+
+        if preserveCurrentSurfaceTree {
+            if let startupProject {
+                selectedProjectSidebarItemID = startupProject.id
+                projectSurfaceTrees[startupProject.id] = surfaceTree
+            }
+            return
+        }
+
+        guard let initialProject = startupProject ?? storedProjects.first else {
+            selectedProjectSidebarItemID = nil
+            return
+        }
+
+        selectedProjectSidebarItemID = initialProject.id
+
+        if !startupPath.isEmpty {
+            projectSurfaceTrees[initialProject.id] = surfaceTree
+            return
+        }
+
+        guard let initialTree = makeProjectSurfaceTree(for: initialProject) else { return }
+        projectSurfaceTrees[initialProject.id] = initialTree
+        activateProjectSurfaceTree(initialTree)
+    }
+
+    private func activateProjectSurfaceTree(_ tree: SplitTree<Ghostty.SurfaceView>) {
+        let previousFocusedSurface = focusedSurface
+        surfaceTree = tree
+        let targetSurface = tree.root?.leftmostLeaf()
+        focusedSurface = targetSurface
+        if let targetSurface {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: targetSurface, from: previousFocusedSurface)
+            }
+        }
+    }
+
+    private func makeProjectSurfaceTree(for project: ProjectSidebarItem) -> SplitTree<Ghostty.SurfaceView>? {
+        guard let ghosttyApp = ghostty.app else { return nil }
+        var config = Ghostty.SurfaceConfiguration()
+        config.workingDirectory = project.path
+        return .init(view: Ghostty.SurfaceView(ghosttyApp, baseConfig: config))
+    }
+
+    private func addProjectSidebarItem(path: String) {
+        let normalizedPath = normalizedProjectPath(path)
+        guard !normalizedPath.isEmpty else { return }
+
+        if let existingProject = projectSidebarItems.first(
+            where: { projectPathKey($0.path) == projectPathKey(normalizedPath) }
+        ) {
+            selectProjectSidebarItem(id: existingProject.id)
+            return
+        }
+
+        let project = ProjectSidebarItem(
+            id: UUID(),
+            name: projectNameFromPath(normalizedPath),
+            path: normalizedPath
+        )
+        projectSidebarItems.append(project)
+        Self.persistProjectSidebarItems(projectSidebarItems)
+        selectProjectSidebarItem(id: project.id)
+    }
+
+    private func normalizedProjectPath(_ path: String) -> String {
+        var result = (path as NSString).expandingTildeInPath
+        result = (result as NSString).standardizingPath
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.count > 1 && result.hasSuffix("/") {
+            result.removeLast()
+        }
+        return result
+    }
+
+    private func projectNameFromPath(_ path: String) -> String {
+        let projectName = URL(fileURLWithPath: path).lastPathComponent
+        return projectName.isEmpty ? path : projectName
+    }
+
+    private func projectPathKey(_ path: String) -> String {
+        normalizedProjectPath(path).replacingOccurrences(of: "\\", with: "/").lowercased()
+    }
+
+    private static func loadPersistedProjectSidebarItems() -> [ProjectSidebarItem] {
+        guard let data = UserDefaults.standard.data(forKey: projectSidebarStorageKey) else {
+            return []
+        }
+
+        do {
+            return try JSONDecoder().decode([ProjectSidebarItem].self, from: data)
+        } catch {
+            Ghostty.logger.warning("failed to decode project sidebar entries: \(error)")
+            return []
+        }
+    }
+
+    private static func persistProjectSidebarItems(_ projects: [ProjectSidebarItem]) {
+        do {
+            let data = try JSONEncoder().encode(projects)
+            UserDefaults.standard.set(data, forKey: projectSidebarStorageKey)
+        } catch {
+            Ghostty.logger.warning("failed to persist project sidebar entries: \(error)")
+        }
     }
 
     // MARK: Terminal Creation

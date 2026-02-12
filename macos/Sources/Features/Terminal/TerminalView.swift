@@ -35,6 +35,27 @@ protocol TerminalViewModel: ObservableObject {
     
     /// The update overlay should be visible.
     var updateOverlayIsVisible: Bool { get }
+
+    /// Whether to show the project sidebar in the terminal workspace.
+    var showsProjectSidebar: Bool { get }
+
+    /// The list of projects shown in the sidebar.
+    var projectSidebarItems: [ProjectSidebarItem] { get }
+
+    /// The currently selected project in the sidebar.
+    var selectedProjectSidebarItemID: UUID? { get }
+
+    /// Select a project from the sidebar.
+    func selectProjectSidebarItem(id: UUID)
+
+    /// Show the picker for adding a new project.
+    func addProjectSidebarItem()
+}
+
+struct ProjectSidebarItem: Identifiable, Codable, Hashable {
+    var id: UUID
+    var name: String
+    var path: String
 }
 
 /// The main terminal view. This terminal view supports splits.

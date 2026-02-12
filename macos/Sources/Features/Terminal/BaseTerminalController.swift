@@ -52,6 +52,15 @@ class BaseTerminalController: NSWindowController,
     /// Set if the terminal view should show the update overlay.
     @Published var updateOverlayIsVisible: Bool = false
 
+    /// Items rendered in the project sidebar.
+    @Published var projectSidebarItems: [ProjectSidebarItem] = []
+
+    /// Active selection in the project sidebar.
+    @Published var selectedProjectSidebarItemID: UUID? = nil
+
+    /// Controls whether the project sidebar is rendered at all.
+    var showsProjectSidebar: Bool { false }
+
     /// Whether the terminal surface should focus when the mouse is over it.
     var focusFollowsMouse: Bool {
         self.derivedConfig.focusFollowsMouse
@@ -275,6 +284,12 @@ class BaseTerminalController: NSWindowController,
             }
         }
     }
+
+    /// Override in subclasses that implement a project sidebar.
+    func selectProjectSidebarItem(id: UUID) {}
+
+    /// Override in subclasses that implement a project sidebar.
+    func addProjectSidebarItem() {}
 
     /// Called when the surfaceTree variable changed.
     ///

@@ -4,7 +4,7 @@ import SwiftUI
 /// Use this container to achieve a glass effect at the window level.
 /// Modifying `NSThemeFrame` can sometimes be unpredictable.
 class TerminalViewContainer<ViewModel: TerminalViewModel>: NSView {
-    private let terminalView: NSView
+    private let contentView: NSView
 
     /// Glass effect view for liquid glass background when transparency is enabled
     private var glassEffectView: NSView?
@@ -13,7 +13,7 @@ class TerminalViewContainer<ViewModel: TerminalViewModel>: NSView {
 
     init(ghostty: Ghostty.App, viewModel: ViewModel, delegate: (any TerminalViewDelegate)? = nil) {
         self.derivedConfig = DerivedConfig(config: ghostty.config)
-        self.terminalView = NSHostingView(rootView: TerminalView(
+        self.contentView = NSHostingView(rootView: TerminalWorkspaceView(
             ghostty: ghostty,
             viewModel: viewModel,
             delegate: delegate
@@ -31,17 +31,17 @@ class TerminalViewContainer<ViewModel: TerminalViewModel>: NSView {
     /// work in ``TerminalController/windowDidLoad()``,
     /// we override this to provide the correct size.
     override var intrinsicContentSize: NSSize {
-        terminalView.intrinsicContentSize
+        contentView.intrinsicContentSize
     }
 
     private func setup() {
-        addSubview(terminalView)
-        terminalView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentView)
+        contentView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            terminalView.topAnchor.constraint(equalTo: topAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
 
         NotificationCenter.default.addObserver(
@@ -88,7 +88,7 @@ private extension TerminalViewContainer {
             return nil
         }
         let effectView = NSGlassEffectView()
-        addSubview(effectView, positioned: .below, relativeTo: terminalView)
+        addSubview(effectView, positioned: .below, relativeTo: contentView)
         effectView.translatesAutoresizingMaskIntoConstraints = false
         glassTopConstraint = effectView.topAnchor.constraint(
             equalTo: topAnchor,
@@ -156,5 +156,101 @@ private extension TerminalViewContainer {
             self.backgroundOpacity = config.backgroundOpacity
             self.backgroundColor = config.backgroundColor
         }
+    }
+}
+
+private struct TerminalWorkspaceView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var ghostty: Ghostty.App
+    @ObservedObject var viewModel: ViewModel
+    var delegate: (any TerminalViewDelegate)?
+
+    var body: some View {
+        Group {
+            if viewModel.showsProjectSidebar {
+                HStack(spacing: 0) {
+                    ProjectSidebarView(viewModel: viewModel)
+                    Divider()
+                    terminalView
+                }
+            } else {
+                terminalView
+            }
+        }
+    }
+
+    private var terminalView: some View {
+        TerminalView(ghostty: ghostty, viewModel: viewModel, delegate: delegate)
+    }
+}
+
+private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var viewModel: ViewModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Projects")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    viewModel.addProjectSidebarItem()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add Project")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            if viewModel.projectSidebarItems.isEmpty {
+                VStack {
+                    Text("No projects yet")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 16)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(viewModel.projectSidebarItems) { project in
+                            let isSelected = viewModel.selectedProjectSidebarItemID == project.id
+                            Button {
+                                viewModel.selectProjectSidebarItem(id: project.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(project.name)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(project.path.abbreviatedPath)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                }
+            }
+        }
+        .frame(minWidth: 220, idealWidth: 220, maxWidth: 220, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
     }
 }
