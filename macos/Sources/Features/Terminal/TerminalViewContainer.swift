@@ -170,16 +170,88 @@ private struct TerminalWorkspaceView<ViewModel: TerminalViewModel>: View {
                 HStack(spacing: 0) {
                     ProjectSidebarView(viewModel: viewModel)
                     Divider()
-                    terminalView
+                    panelContent
                 }
             } else {
-                terminalView
+                panelContent
             }
+        }
+    }
+
+    private var panelContent: some View {
+        VStack(spacing: 0) {
+            if !viewModel.mainPanelTabs.isEmpty {
+                MainPanelTabsView(viewModel: viewModel)
+                Divider()
+            }
+            terminalView
         }
     }
 
     private var terminalView: some View {
         TerminalView(ghostty: ghostty, viewModel: viewModel, delegate: delegate)
+    }
+}
+
+private struct MainPanelTabsView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var viewModel: ViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(viewModel.mainPanelTabs) { tab in
+                        tabButton(tab)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
+            Button {
+                viewModel.addMainPanelTab()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New Tab")
+            .padding(.trailing, 8)
+        }
+        .frame(height: 32)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.85))
+    }
+
+    @ViewBuilder
+    private func tabButton(_ tab: MainPanelTabItem) -> some View {
+        let isSelected = viewModel.selectedMainPanelTabID == tab.id
+        HStack(spacing: 6) {
+            Button {
+                viewModel.selectMainPanelTab(id: tab.id)
+            } label: {
+                Text(tab.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .padding(.leading, 9)
+                    .padding(.trailing, 2)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+            Button {
+                viewModel.closeMainPanelTab(id: tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close Tab")
+            .padding(.trailing, 6)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
+        )
     }
 }
 

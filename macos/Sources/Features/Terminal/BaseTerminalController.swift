@@ -61,6 +61,12 @@ class BaseTerminalController: NSWindowController,
     /// Whether the project sidebar is collapsed to a narrow toggle rail.
     @Published var projectSidebarIsCollapsed: Bool = false
 
+    /// Tabs shown in the main panel.
+    @Published var mainPanelTabs: [MainPanelTabItem] = []
+
+    /// Active tab selection for the main panel.
+    @Published var selectedMainPanelTabID: UUID? = nil
+
     /// Controls whether the project sidebar is rendered at all.
     var showsProjectSidebar: Bool { false }
 
@@ -307,6 +313,15 @@ class BaseTerminalController: NSWindowController,
             }
         }
     }
+
+    /// Override in subclasses that implement main panel tabs.
+    func addMainPanelTab() {}
+
+    /// Override in subclasses that implement main panel tabs.
+    func selectMainPanelTab(id: UUID) {}
+
+    /// Override in subclasses that implement main panel tabs.
+    func closeMainPanelTab(id: UUID) {}
 
     /// Called when the surfaceTree variable changed.
     ///

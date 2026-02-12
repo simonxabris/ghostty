@@ -56,12 +56,32 @@ protocol TerminalViewModel: ObservableObject {
 
     /// Collapse or expand the project sidebar.
     func toggleProjectSidebarCollapsed()
+
+    /// Tabs rendered in the main panel.
+    var mainPanelTabs: [MainPanelTabItem] { get }
+
+    /// The currently selected tab in the main panel.
+    var selectedMainPanelTabID: UUID? { get }
+
+    /// Create a new tab in the main panel.
+    func addMainPanelTab()
+
+    /// Select the active tab in the main panel.
+    func selectMainPanelTab(id: UUID)
+
+    /// Close a tab in the main panel.
+    func closeMainPanelTab(id: UUID)
 }
 
 struct ProjectSidebarItem: Identifiable, Codable, Hashable {
     var id: UUID
     var name: String
     var path: String
+}
+
+struct MainPanelTabItem: Identifiable, Hashable {
+    var id: UUID
+    var title: String
 }
 
 /// The main terminal view. This terminal view supports splits.
