@@ -213,6 +213,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     override func selectProjectSidebarItem(id: UUID) {
+        refreshProjectSidebarGitBranches(for: [id])
         guard selectedProjectSidebarItemID != id else { return }
         guard let project = projectSidebarItems.first(where: { $0.id == id }) else { return }
 
@@ -352,6 +353,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         projectSidebarItems = storedProjects
+        refreshProjectSidebarGitBranches()
 
         if preserveCurrentSurfaceTree {
             if let startupProject {
@@ -632,8 +634,64 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         )
         projectSidebarItems.append(project)
         Self.persistProjectSidebarItems(projectSidebarItems)
+        refreshProjectSidebarGitBranches(for: [project.id])
         selectProjectSidebarItem(id: project.id)
         refreshMainPanelTabs()
+    }
+
+    private func refreshProjectSidebarGitBranches(for projectIDs: [UUID]? = nil) {
+        let snapshot: [ProjectSidebarItem]
+        if let projectIDs {
+            let idSet = Set(projectIDs)
+            snapshot = projectSidebarItems.filter { idSet.contains($0.id) }
+        } else {
+            snapshot = projectSidebarItems
+        }
+        guard !snapshot.isEmpty else { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let branchesByProjectID = snapshot.map { project in
+                (project.id, Self.currentGitBranch(at: project.path))
+            }
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+
+                for (projectID, gitBranch) in branchesByProjectID {
+                    guard let index = self.projectSidebarItems.firstIndex(where: { $0.id == projectID }) else { continue }
+                    self.projectSidebarItems[index].gitBranch = gitBranch
+                }
+            }
+        }
+    }
+
+    private static func currentGitBranch(at path: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["git", "-C", path, "branch", "--show-current"]
+
+        let outputPipe = Pipe()
+        task.standardOutput = outputPipe
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+        } catch {
+            return nil
+        }
+
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { return nil }
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let branch = String(data: output, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !branch.isEmpty
+        else {
+            return nil
+        }
+
+        return branch
     }
 
     private func normalizedProjectPath(_ path: String) -> String {

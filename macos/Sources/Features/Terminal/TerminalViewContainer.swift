@@ -376,7 +376,7 @@ private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(project.path.abbreviatedPath)
+                    Text(project.gitBranch ?? project.path.abbreviatedPath)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
