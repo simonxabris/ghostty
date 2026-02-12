@@ -301,6 +301,9 @@ class BaseTerminalController: NSWindowController,
     func addProjectSidebarItem() {}
 
     /// Override in subclasses that implement a project sidebar.
+    func removeProjectSidebarItem(id: UUID) {}
+
+    /// Override in subclasses that implement a project sidebar.
     func toggleProjectSidebarCollapsed() {
         guard showsProjectSidebar else { return }
         withAnimation(.easeInOut(duration: 0.2)) {

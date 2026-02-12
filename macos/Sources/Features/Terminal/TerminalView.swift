@@ -54,6 +54,9 @@ protocol TerminalViewModel: ObservableObject {
     /// Show the picker for adding a new project.
     func addProjectSidebarItem()
 
+    /// Remove a project from the sidebar.
+    func removeProjectSidebarItem(id: UUID)
+
     /// Collapse or expand the project sidebar.
     func toggleProjectSidebarCollapsed()
 

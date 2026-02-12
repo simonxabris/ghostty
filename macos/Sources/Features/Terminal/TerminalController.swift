@@ -260,6 +260,36 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         addProjectSidebarItem(path: url.path)
     }
 
+    override func removeProjectSidebarItem(id: UUID) {
+        guard let removeIndex = projectSidebarItems.firstIndex(where: { $0.id == id }) else { return }
+
+        let removedWorkspaceKey = workspaceKey(for: id)
+        let isRemovingSelectedProject = selectedProjectSidebarItemID == id
+
+        if isRemovingSelectedProject {
+            syncActiveMainPanelTabState()
+        }
+
+        projectSidebarItems.remove(at: removeIndex)
+        Self.persistProjectSidebarItems(projectSidebarItems)
+
+        mainPanelTabStatesByWorkspace.removeValue(forKey: removedWorkspaceKey)
+        selectedMainPanelTabIDByWorkspace.removeValue(forKey: removedWorkspaceKey)
+
+        if isRemovingSelectedProject {
+            selectedProjectSidebarItemID = nil
+            mainPanelTabStatesByWorkspace[.unscoped] = mainPanelTabStates
+            if let selectedMainPanelTabID {
+                selectedMainPanelTabIDByWorkspace[.unscoped] = selectedMainPanelTabID
+            } else {
+                selectedMainPanelTabIDByWorkspace.removeValue(forKey: .unscoped)
+            }
+        }
+
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+    }
+
     override func addMainPanelTab() {
         addMainPanelTab(withBaseConfig: nil)
     }

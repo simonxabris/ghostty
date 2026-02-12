@@ -323,28 +323,11 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(viewModel.projectSidebarItems) { project in
                             let isSelected = viewModel.selectedProjectSidebarItemID == project.id
-                            Button {
-                                viewModel.selectProjectSidebarItem(id: project.id)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(project.name)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    Text(project.path.abbreviatedPath)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
-                                )
-                            }
-                            .buttonStyle(.plain)
+                            ProjectSidebarRowView(
+                                viewModel: viewModel,
+                                project: project,
+                                isSelected: isSelected
+                            )
                         }
                     }
                     .padding(.horizontal, 8)
@@ -374,5 +357,58 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var viewModel: ViewModel
+    var project: ProjectSidebarItem
+    var isSelected: Bool
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            Button {
+                viewModel.selectProjectSidebarItem(id: project.id)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.name)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(project.path.abbreviatedPath)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 8)
+                .padding(.trailing, isHovered ? 24 : 8)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                )
+                .animation(.easeInOut(duration: 0.12), value: isHovered)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                viewModel.removeProjectSidebarItem(id: project.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove \(project.name)")
+            .padding(.trailing, 8)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
+        }
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
