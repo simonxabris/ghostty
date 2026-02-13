@@ -697,6 +697,7 @@ fn actionCommands(action: Action.Key) []const Command {
         .jump_to_prompt,
         .write_scrollback_file,
         .goto_tab,
+        .goto_project,
         .resize_split,
         .activate_key_table,
         .activate_key_table_once,
@@ -714,6 +715,9 @@ fn actionCommands(action: Action.Key) []const Command {
         .previous_tab,
         .next_tab,
         .last_tab,
+        .previous_project,
+        .next_project,
+        .last_project,
         => comptime &.{},
 
         // No commands for obvious reasons

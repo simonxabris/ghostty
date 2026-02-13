@@ -549,6 +549,21 @@ pub const Action = union(enum) {
     /// this will go to the last tab.
     goto_tab: usize,
 
+    /// Go to the previous project in the project sidebar.
+    previous_project,
+
+    /// Go to the next project in the project sidebar.
+    next_project,
+
+    /// Go to the last project in the project sidebar.
+    last_project,
+
+    /// Go to the project with the specific index, starting from 1.
+    ///
+    /// If the project number is higher than the number of projects,
+    /// this will go to the last project.
+    goto_project: usize,
+
     /// Moves a tab by a relative offset.
     ///
     /// Positive values move the tab forwards, and negative values move it
@@ -1372,6 +1387,10 @@ pub const Action = union(enum) {
             .next_tab,
             .last_tab,
             .goto_tab,
+            .previous_project,
+            .next_project,
+            .last_project,
+            .goto_project,
             .move_tab,
             .toggle_tab_overview,
             .new_split,

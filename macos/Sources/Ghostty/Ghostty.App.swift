@@ -501,6 +501,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_GOTO_TAB:
                 return gotoTab(app, target: target, tab: action.action.goto_tab)
 
+            case GHOSTTY_ACTION_GOTO_PROJECT:
+                return gotoProject(app, target: target, project: action.action.goto_project)
+
             case GHOSTTY_ACTION_GOTO_SPLIT:
                 return gotoSplit(app, target: target, direction: action.action.goto_split)
 
@@ -1117,6 +1120,48 @@ extension Ghostty {
                         object: surfaceView,
                         userInfo: [
                             Notification.GotoTabKey: tab,
+                        ]
+                    )
+
+                default:
+                    assertionFailure()
+                }
+
+                return true
+        }
+
+        private static func gotoProject(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            project: ghostty_action_goto_project_e) -> Bool {
+                switch (target.tag) {
+                case GHOSTTY_TARGET_APP:
+                    Ghostty.logger.warning("goto project does nothing with an app target")
+                    return false
+
+                case GHOSTTY_TARGET_SURFACE:
+                    guard let surface = target.target.surface else { return false }
+                    guard let surfaceView = self.surfaceView(from: surface) else { return false }
+                    guard let controller = surfaceView.window?.windowController as? TerminalController else { return false }
+
+                    let projectCount = controller.projectSidebarItems.count
+                    guard projectCount > 0 else { return false }
+
+                    let projectIndex = project.rawValue
+                    if projectIndex <= 0 {
+                        if projectIndex == GHOSTTY_GOTO_PROJECT_PREVIOUS.rawValue ||
+                            projectIndex == GHOSTTY_GOTO_PROJECT_NEXT.rawValue {
+                            guard projectCount > 1 else { return false }
+                        } else if projectIndex != GHOSTTY_GOTO_PROJECT_LAST.rawValue {
+                            return false
+                        }
+                    }
+
+                    NotificationCenter.default.post(
+                        name: Ghostty.Notification.ghosttyGotoProject,
+                        object: surfaceView,
+                        userInfo: [
+                            Ghostty.Notification.GotoProjectKey: project,
                         ]
                     )
 

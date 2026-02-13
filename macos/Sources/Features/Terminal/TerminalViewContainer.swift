@@ -275,7 +275,7 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
         .clipped()
         .frame(width: viewModel.projectSidebarIsCollapsed ? collapsedWidth : expandedWidth)
         .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+        .background(SidebarVisualEffectBackground(material: .sidebar))
         .animation(sidebarAnimation, value: viewModel.projectSidebarIsCollapsed)
     }
 
@@ -292,18 +292,20 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 28, height: 22)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .accessibilityLabel("Collapse Project Sidebar")
                 Button {
                     viewModel.addProjectSidebarItem()
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 28, height: 22)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .accessibilityLabel("Add Project")
             }
             .padding(.horizontal, 12)
@@ -345,12 +347,14 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                                     .padding(.bottom, 4)
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .background(
                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                                     .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
                             )
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
                 }
@@ -367,9 +371,10 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
                 } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 18, height: 18)
+                        .frame(width: 28, height: 22)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .accessibilityLabel("Expand Project Sidebar")
                 Spacer(minLength: 0)
             }
@@ -381,6 +386,25 @@ private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
     }
 }
 
+private struct SidebarVisualEffectBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.autoresizingMask = [.width, .height]
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.material = material
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
+    }
+}
+
 private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
     @ObservedObject var viewModel: ViewModel
     var project: ProjectSidebarItem
@@ -388,30 +412,34 @@ private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
     @State private var isHovered: Bool = false
 
     var body: some View {
-        ZStack(alignment: .trailing) {
-            Button {
-                viewModel.selectProjectSidebarItem(id: project.id)
-            } label: {
-                HStack(alignment: .top, spacing: 6) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(project.name)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Text(project.gitBranch ?? project.path.abbreviatedPath)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        Button {
+            viewModel.selectProjectSidebarItem(id: project.id)
+        } label: {
+            HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.name)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(project.gitBranch ?? project.path.abbreviatedPath)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .padding(.leading, 8)
-                .padding(.trailing, isHovered ? 24 : 8)
-                .padding(.vertical, 6)
-                .animation(.easeInOut(duration: 0.12), value: isHovered)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 8)
+            .padding(.trailing, isHovered ? 24 : 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .overlay(alignment: .trailing) {
             if isHovered {
                 Button {
                     viewModel.removeProjectSidebarItem(id: project.id)

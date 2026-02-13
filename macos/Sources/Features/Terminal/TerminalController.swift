@@ -122,6 +122,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             object: nil)
         center.addObserver(
             self,
+            selector: #selector(onGotoProject),
+            name: Ghostty.Notification.ghosttyGotoProject,
+            object: nil)
+        center.addObserver(
+            self,
             selector: #selector(onCloseTab),
             name: .ghosttyCloseTab,
             object: nil)
@@ -1909,6 +1914,52 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         guard finalIndex >= 0 else { return }
         selectMainPanelTab(id: mainPanelTabStates[finalIndex].id)
+    }
+
+    @objc private func onGotoProject(notification: SwiftUI.Notification) {
+        guard let target = notification.object as? Ghostty.SurfaceView else { return }
+        guard target == self.focusedSurface else { return }
+
+        guard let projectEnumAny = notification.userInfo?[Ghostty.Notification.GotoProjectKey] else { return }
+        guard let projectEnum = projectEnumAny as? ghostty_action_goto_project_e else { return }
+        guard !projectSidebarItems.isEmpty else { return }
+
+        let selectedIndex: Int? = selectedProjectSidebarItemID.flatMap { selectedID in
+            projectSidebarItems.firstIndex(where: { $0.id == selectedID })
+        }
+        let projectIndex: Int32 = projectEnum.rawValue
+        let finalIndex: Int
+
+        if (projectIndex <= 0) {
+            switch projectIndex {
+            case GHOSTTY_GOTO_PROJECT_PREVIOUS.rawValue:
+                guard projectSidebarItems.count > 1 else { return }
+                if let selectedIndex {
+                    finalIndex = selectedIndex == 0 ? projectSidebarItems.count - 1 : selectedIndex - 1
+                } else {
+                    finalIndex = projectSidebarItems.count - 1
+                }
+
+            case GHOSTTY_GOTO_PROJECT_NEXT.rawValue:
+                guard projectSidebarItems.count > 1 else { return }
+                if let selectedIndex {
+                    finalIndex = selectedIndex == projectSidebarItems.count - 1 ? 0 : selectedIndex + 1
+                } else {
+                    finalIndex = 0
+                }
+
+            case GHOSTTY_GOTO_PROJECT_LAST.rawValue:
+                finalIndex = projectSidebarItems.count - 1
+
+            default:
+                return
+            }
+        } else {
+            finalIndex = min(Int(projectIndex - 1), projectSidebarItems.count - 1)
+        }
+
+        guard finalIndex >= 0, finalIndex < projectSidebarItems.count else { return }
+        selectProjectSidebarItem(id: projectSidebarItems[finalIndex].id)
     }
 
     @objc private func onCloseTab(notification: SwiftUI.Notification) {
