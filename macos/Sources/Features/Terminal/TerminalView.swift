@@ -1,6 +1,7 @@
 import SwiftUI
 import GhosttyKit
 import os
+import AppKit
 
 /// This delegate is notified of actions and property changes regarding the terminal view. This
 /// delegate is optional and can be used by a TerminalView caller to react to changes such as
@@ -80,6 +81,18 @@ protocol TerminalViewModel: ObservableObject {
 
     /// Active running process count for a project.
     func runningProcessCount(for projectID: UUID) -> Int
+
+    /// Whether the terminal overview overlay is visible.
+    var terminalOverviewIsShowing: Bool { get set }
+
+    /// Items to render in the terminal overview.
+    var terminalOverviewItems: [TerminalOverviewItem] { get }
+
+    /// Refresh overview contents when opening.
+    func refreshTerminalOverviewItems()
+
+    /// Activate a selected overview destination.
+    func activateTerminalOverviewItem(id: UUID)
 }
 
 struct ProjectSidebarItem: Identifiable, Codable, Hashable {
@@ -101,6 +114,25 @@ struct RunningProcessItem: Identifiable, Hashable {
     var tabTitle: String
     var primaryText: String
     var secondaryText: String?
+}
+
+struct TerminalOverviewItem: Identifiable {
+    enum Status {
+        case running
+        case idle
+    }
+
+    var id: UUID
+    var controllerID: UUID
+    var projectID: UUID?
+    var tabID: UUID
+    var surfaceID: UUID
+    var title: String
+    var cwd: String?
+    var projectName: String?
+    var tabTitle: String
+    var status: Status
+    var thumbnail: NSImage?
 }
 
 /// The main terminal view. This terminal view supports splits.
@@ -186,6 +218,21 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 // Show update information above all else.
                 if viewModel.updateOverlayIsVisible {
                     UpdateOverlay()
+                }
+
+                if viewModel.terminalOverviewIsShowing {
+                    TerminalOverviewView(
+                        items: viewModel.terminalOverviewItems,
+                        onClose: {
+                            viewModel.terminalOverviewIsShowing = false
+                        },
+                        onSelect: { item in
+                            viewModel.activateTerminalOverviewItem(id: item.id)
+                        }
+                    )
+                    .onAppear {
+                        viewModel.refreshTerminalOverviewItems()
+                    }
                 }
             }
             .frame(maxWidth: .greatestFiniteMagnitude, maxHeight: .greatestFiniteMagnitude)

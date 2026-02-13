@@ -70,6 +70,12 @@ class BaseTerminalController: NSWindowController,
     /// Active running process entries grouped by project.
     @Published var runningProcessesByProjectID: [UUID: [RunningProcessItem]] = [:]
 
+    /// Whether the terminal overview is visible.
+    @Published var terminalOverviewIsShowing: Bool = false
+
+    /// Overview items rendered by TerminalView.
+    @Published var terminalOverviewItems: [TerminalOverviewItem] = []
+
     /// Controls whether the project sidebar is rendered at all.
     var showsProjectSidebar: Bool { false }
 
@@ -331,6 +337,15 @@ class BaseTerminalController: NSWindowController,
 
     func runningProcessCount(for projectID: UUID) -> Int {
         runningProcessesByProjectID[projectID]?.count ?? 0
+    }
+
+    func refreshTerminalOverviewItems() {
+        terminalOverviewItems = []
+    }
+
+    func activateTerminalOverviewItem(id: UUID) {
+        _ = id
+        terminalOverviewIsShowing = false
     }
 
     /// Called when the surfaceTree variable changed.
@@ -1424,6 +1439,13 @@ class BaseTerminalController: NSWindowController,
 
     @IBAction func toggleCommandPalette(_ sender: Any?) {
         commandPaletteIsShowing.toggle()
+    }
+
+    @IBAction func toggleTabOverview(_ sender: Any?) {
+        terminalOverviewIsShowing.toggle()
+        if terminalOverviewIsShowing {
+            refreshTerminalOverviewItems()
+        }
     }
     
     @IBAction func find(_ sender: Any) {
