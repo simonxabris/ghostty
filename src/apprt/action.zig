@@ -334,6 +334,11 @@ pub const Action = union(Key) {
     /// value is invalid.
     goto_project: GotoProject,
 
+    /// Copy the effective title of the surface to the clipboard.
+    /// The effective title is the user-overridden title if set,
+    /// otherwise the terminal-set title.
+    copy_title_to_clipboard,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -400,6 +405,7 @@ pub const Action = union(Key) {
         search_selected,
         readonly,
         goto_project,
+        copy_title_to_clipboard,
     };
 
     /// Sync with: ghostty_action_u
