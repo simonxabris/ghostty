@@ -4,7 +4,7 @@ import SwiftUI
 /// Use this container to achieve a glass effect at the window level.
 /// Modifying `NSThemeFrame` can sometimes be unpredictable.
 class TerminalViewContainer<ViewModel: TerminalViewModel>: NSView {
-    private let terminalView: NSView
+    private let contentView: NSView
 
     /// Glass effect view for liquid glass background when transparency is enabled
     private var glassEffectView: NSView?
@@ -13,7 +13,7 @@ class TerminalViewContainer<ViewModel: TerminalViewModel>: NSView {
 
     init(ghostty: Ghostty.App, viewModel: ViewModel, delegate: (any TerminalViewDelegate)? = nil) {
         self.derivedConfig = DerivedConfig(config: ghostty.config)
-        self.terminalView = NSHostingView(rootView: TerminalView(
+        self.contentView = NSHostingView(rootView: TerminalWorkspaceView(
             ghostty: ghostty,
             viewModel: viewModel,
             delegate: delegate
@@ -31,17 +31,17 @@ class TerminalViewContainer<ViewModel: TerminalViewModel>: NSView {
     /// work in ``TerminalController/windowDidLoad()``,
     /// we override this to provide the correct size.
     override var intrinsicContentSize: NSSize {
-        terminalView.intrinsicContentSize
+        contentView.intrinsicContentSize
     }
 
     private func setup() {
-        addSubview(terminalView)
-        terminalView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentView)
+        contentView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            terminalView.topAnchor.constraint(equalTo: topAnchor),
-            terminalView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            terminalView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            terminalView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
 
         NotificationCenter.default.addObserver(
@@ -88,7 +88,7 @@ private extension TerminalViewContainer {
             return nil
         }
         let effectView = NSGlassEffectView()
-        addSubview(effectView, positioned: .below, relativeTo: terminalView)
+        addSubview(effectView, positioned: .below, relativeTo: contentView)
         effectView.translatesAutoresizingMaskIntoConstraints = false
         glassTopConstraint = effectView.topAnchor.constraint(
             equalTo: topAnchor,
@@ -155,6 +155,319 @@ private extension TerminalViewContainer {
             self.backgroundBlur = config.backgroundBlur
             self.backgroundOpacity = config.backgroundOpacity
             self.backgroundColor = config.backgroundColor
+        }
+    }
+}
+
+private struct TerminalWorkspaceView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var ghostty: Ghostty.App
+    @ObservedObject var viewModel: ViewModel
+    var delegate: (any TerminalViewDelegate)?
+
+    var body: some View {
+        Group {
+            if viewModel.showsProjectSidebar {
+                HStack(spacing: 0) {
+                    ProjectSidebarView(viewModel: viewModel)
+                    Divider()
+                    panelContent
+                }
+            } else {
+                panelContent
+            }
+        }
+    }
+
+    private var panelContent: some View {
+        VStack(spacing: 0) {
+            if !viewModel.mainPanelTabs.isEmpty {
+                MainPanelTabsView(viewModel: viewModel)
+                Divider()
+            }
+            terminalView
+        }
+    }
+
+    private var terminalView: some View {
+        TerminalView(ghostty: ghostty, viewModel: viewModel, delegate: delegate)
+    }
+}
+
+private struct MainPanelTabsView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var viewModel: ViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(viewModel.mainPanelTabs) { tab in
+                        tabButton(tab)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
+            Button {
+                viewModel.addMainPanelTab()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New Tab")
+            .padding(.trailing, 8)
+        }
+        .frame(height: 32)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.85))
+    }
+
+    @ViewBuilder
+    private func tabButton(_ tab: MainPanelTabItem) -> some View {
+        let isSelected = viewModel.selectedMainPanelTabID == tab.id
+        HStack(spacing: 6) {
+            Button {
+                viewModel.selectMainPanelTab(id: tab.id)
+            } label: {
+                Text(tab.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                    .padding(.leading, 9)
+                    .padding(.trailing, 2)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+            Button {
+                viewModel.closeMainPanelTab(id: tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close Tab")
+            .padding(.trailing, 6)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
+        )
+    }
+}
+
+private struct ProjectSidebarView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var viewModel: ViewModel
+    private let expandedWidth: CGFloat = 220
+    private let collapsedWidth: CGFloat = 32
+    private let sidebarAnimation: Animation = .easeInOut(duration: 0.2)
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if !viewModel.projectSidebarIsCollapsed {
+                expandedSidebar
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            if viewModel.projectSidebarIsCollapsed {
+                collapsedSidebar
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+        }
+        .clipped()
+        .frame(width: viewModel.projectSidebarIsCollapsed ? collapsedWidth : expandedWidth)
+        .frame(maxHeight: .infinity)
+        .background(SidebarVisualEffectBackground(material: .sidebar))
+        .animation(sidebarAnimation, value: viewModel.projectSidebarIsCollapsed)
+    }
+
+    private var expandedSidebar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Projects")
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    viewModel.toggleProjectSidebarCollapsed()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 22)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Collapse Project Sidebar")
+                Button {
+                    viewModel.addProjectSidebarItem()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 22)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Add Project")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            if viewModel.projectSidebarItems.isEmpty {
+                VStack {
+                    Text("No projects yet")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 16)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(viewModel.projectSidebarItems) { project in
+                            let isSelected = viewModel.selectedProjectSidebarItemID == project.id
+                            let runningItems = viewModel.runningProcessesByProjectID[project.id] ?? []
+                            VStack(alignment: .leading, spacing: 0) {
+                                ProjectSidebarRowView(
+                                    viewModel: viewModel,
+                                    project: project,
+                                    runningCount: viewModel.runningProcessCount(for: project.id)
+                                )
+                                if !runningItems.isEmpty {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        ForEach(runningItems) { item in
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(item.primaryText)
+                                                    .font(.system(size: 11, weight: .medium))
+                                                    .foregroundStyle(.primary)
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                    }
+                                    .padding(.leading, 12)
+                                    .padding(.bottom, 4)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var collapsedSidebar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button {
+                    viewModel.toggleProjectSidebarCollapsed()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 28, height: 22)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("Expand Project Sidebar")
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 10)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct SidebarVisualEffectBackground: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.autoresizingMask = [.width, .height]
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.material = material
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
+    }
+}
+
+private struct ProjectSidebarRowView<ViewModel: TerminalViewModel>: View {
+    @ObservedObject var viewModel: ViewModel
+    var project: ProjectSidebarItem
+    var runningCount: Int
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        Button {
+            viewModel.selectProjectSidebarItem(id: project.id)
+        } label: {
+            HStack(alignment: .top, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.name)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(project.gitBranch ?? project.path.abbreviatedPath)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 8)
+            .padding(.trailing, isHovered ? 24 : 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .overlay(alignment: .trailing) {
+            if isHovered {
+                Button {
+                    viewModel.removeProjectSidebarItem(id: project.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 14, height: 14)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(project.name)")
+                .padding(.trailing, 8)
+                .transition(.opacity)
+            } else if runningCount > 0 {
+                Text("\(runningCount)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.accentColor.opacity(0.2))
+                    )
+                    .padding(.trailing, 8)
+                    .transition(.opacity)
+            }
+        }
+        .onHover { hovering in
+            isHovered = hovering
         }
     }
 }

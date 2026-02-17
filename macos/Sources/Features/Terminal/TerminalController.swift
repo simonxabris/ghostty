@@ -6,6 +6,8 @@ import GhosttyKit
 
 /// A classic, tabbed terminal experience.
 class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Controller {
+    private static let projectSidebarStorageKey = "com.mitchellh.ghostty.projects.sidebar.v1"
+
     override var windowNibName: NSNib.Name? {
         let defaultValue = "Terminal"
         
@@ -50,6 +52,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// This is set to false by init if the window managed by this controller should not be restorable.
     /// For example, terminals executing custom scripts are not restorable.
     private var restorable: Bool = true
+
+    /// Stable identifier for overview routing.
+    private let controllerID = UUID()
     
     /// The configuration derived from the Ghostty config so we don't need to rely on references.
     private(set) var derivedConfig: DerivedConfig
@@ -60,7 +65,27 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     
     /// This will be set to the initial frame of the window from the xib on load.
     private var initialFrame: NSRect? = nil
-    
+
+    private struct MainPanelTabState {
+        var id: UUID
+        var surfaceTree: SplitTree<Ghostty.SurfaceView>
+    }
+
+    private enum MainPanelWorkspaceKey: Hashable {
+        case project(UUID)
+        case unscoped
+    }
+
+    private var mainPanelTabStates: [MainPanelTabState] = []
+    private var mainPanelTabStatesByWorkspace: [MainPanelWorkspaceKey: [MainPanelTabState]] = [:]
+    private var selectedMainPanelTabIDByWorkspace: [MainPanelWorkspaceKey: UUID] = [:]
+    private var runningProcessRefreshTimer: Timer?
+
+    /// Cache terminal overview thumbnails by surface UUID.
+    private var terminalOverviewThumbnailCache: [UUID: NSImage] = [:]
+
+    override var showsProjectSidebar: Bool { true }
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -77,6 +102,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         self.derivedConfig = DerivedConfig(ghostty.config)
         
         super.init(ghostty, baseConfig: base, surfaceTree: tree)
+
+        bootstrapProjectSidebar(
+            withBaseConfig: base,
+            preserveCurrentSurfaceTree: tree != nil
+        )
+        bootstrapMainPanelTabs()
         
         // Setup our notifications for behaviors
         let center = NotificationCenter.default
@@ -94,6 +125,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             self,
             selector: #selector(onGotoTab),
             name: Ghostty.Notification.ghosttyGotoTab,
+            object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(onGotoProject),
+            name: Ghostty.Notification.ghosttyGotoProject,
+            object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(onToggleTabOverview),
+            name: Ghostty.Notification.ghosttyToggleTabOverview,
             object: nil)
         center.addObserver(
             self,
@@ -133,6 +174,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             name: .ghosttyCloseWindow,
             object: nil
         )
+
+        startRunningProcessRefreshTimer()
+        refreshRunningProcesses()
     }
     
     required init?(coder: NSCoder) {
@@ -140,6 +184,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
     
     deinit {
+        runningProcessRefreshTimer?.invalidate()
+        runningProcessRefreshTimer = nil
+
         // Remove all of our notificationcenter subscriptions
         let center = NotificationCenter.default
         center.removeObserver(self)
@@ -158,11 +205,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         if let window = window as? TerminalWindow {
             window.surfaceIsZoomed = to.zoomed != nil
         }
-        
-        // If our surface tree is now nil then we close our window.
-        if (to.isEmpty) {
-            self.window?.close()
+
+        if !to.isEmpty {
+            syncActiveMainPanelTabState()
+            refreshMainPanelTabs()
+            refreshRunningProcesses()
+            return
         }
+
+        refreshRunningProcesses()
+        closeTabImmediately()
     }
     
     override func replaceSurfaceTree(
@@ -183,6 +235,850 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             moveFocusTo: newView,
             moveFocusFrom: oldView,
             undoAction: undoAction)
+    }
+
+    override func selectProjectSidebarItem(id: UUID) {
+        refreshProjectSidebarGitBranches(for: [id])
+        guard selectedProjectSidebarItemID != id else { return }
+        guard let project = projectSidebarItems.first(where: { $0.id == id }) else { return }
+
+        let nextWorkspaceKey = workspaceKey(for: id)
+        let nextWorkspaceStates = mainPanelTabStatesByWorkspace[nextWorkspaceKey]
+        let nextSelectedTabID = selectedMainPanelTabIDByWorkspace[nextWorkspaceKey]
+
+        if let nextWorkspaceStates, !nextWorkspaceStates.isEmpty {
+            syncActiveMainPanelTabState()
+            selectedProjectSidebarItemID = id
+            mainPanelTabStates = nextWorkspaceStates
+            if let nextSelectedTabID,
+               nextWorkspaceStates.contains(where: { $0.id == nextSelectedTabID }) {
+                selectedMainPanelTabID = nextSelectedTabID
+            } else {
+                selectedMainPanelTabID = nextWorkspaceStates.first?.id
+            }
+            applySelectedMainPanelTabState()
+            persistCurrentMainPanelWorkspaceState()
+            refreshMainPanelTabs()
+            refreshRunningProcesses()
+            return
+        }
+
+        guard let createdTree = makeProjectSurfaceTree(for: project) else { return }
+        syncActiveMainPanelTabState()
+        selectedProjectSidebarItemID = id
+        let initialState = MainPanelTabState(id: UUID(), surfaceTree: createdTree)
+        mainPanelTabStates = [initialState]
+        selectedMainPanelTabID = initialState.id
+        activateProjectSurfaceTree(createdTree)
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+    }
+
+    override func addProjectSidebarItem() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Add Project"
+        panel.message = "Choose a directory to add to the project sidebar."
+        panel.prompt = "Add Project"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        addProjectSidebarItem(path: url.path)
+    }
+
+    override func removeProjectSidebarItem(id: UUID) {
+        guard let removeIndex = projectSidebarItems.firstIndex(where: { $0.id == id }) else { return }
+
+        let removedWorkspaceKey = workspaceKey(for: id)
+        let isRemovingSelectedProject = selectedProjectSidebarItemID == id
+
+        if isRemovingSelectedProject {
+            syncActiveMainPanelTabState()
+        }
+
+        projectSidebarItems.remove(at: removeIndex)
+        Self.persistProjectSidebarItems(projectSidebarItems)
+
+        mainPanelTabStatesByWorkspace.removeValue(forKey: removedWorkspaceKey)
+        selectedMainPanelTabIDByWorkspace.removeValue(forKey: removedWorkspaceKey)
+
+        if isRemovingSelectedProject {
+            selectedProjectSidebarItemID = nil
+            mainPanelTabStatesByWorkspace[.unscoped] = mainPanelTabStates
+            if let selectedMainPanelTabID {
+                selectedMainPanelTabIDByWorkspace[.unscoped] = selectedMainPanelTabID
+            } else {
+                selectedMainPanelTabIDByWorkspace.removeValue(forKey: .unscoped)
+            }
+        }
+
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+    }
+
+    override func addMainPanelTab() {
+        addMainPanelTab(withBaseConfig: nil)
+    }
+
+    override func selectMainPanelTab(id: UUID) {
+        guard selectedMainPanelTabID != id else { return }
+        guard let state = mainPanelTabStates.first(where: { $0.id == id }) else { return }
+
+        syncActiveMainPanelTabState()
+        selectedMainPanelTabID = id
+        applyMainPanelTabState(state)
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+    }
+
+    override func closeMainPanelTab(id: UUID) {
+        guard let state = mainPanelTabStates.first(where: { $0.id == id }) else { return }
+
+        if id == selectedMainPanelTabID {
+            closeTab(nil)
+            return
+        }
+
+        if !tabNeedsCloseConfirmation(state) {
+            closeMainPanelTabImmediately(id: id)
+            return
+        }
+
+        confirmClose(
+            messageText: "Close Tab?",
+            informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
+        ) {
+            self.closeMainPanelTabImmediately(id: id)
+        }
+    }
+
+    private func bootstrapProjectSidebar(
+        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration?,
+        preserveCurrentSurfaceTree: Bool
+    ) {
+        var storedProjects = Self.loadPersistedProjectSidebarItems()
+        let startupPath = normalizedProjectPath(baseConfig?.workingDirectory ?? "")
+        var startupProject: ProjectSidebarItem?
+
+        if !startupPath.isEmpty {
+            if let existingProject = storedProjects.first(
+                where: { projectPathKey($0.path) == projectPathKey(startupPath) }
+            ) {
+                startupProject = existingProject
+            } else {
+                let newProject = ProjectSidebarItem(
+                    id: UUID(),
+                    name: projectNameFromPath(startupPath),
+                    path: startupPath
+                )
+                storedProjects.append(newProject)
+                Self.persistProjectSidebarItems(storedProjects)
+                startupProject = newProject
+            }
+        }
+
+        projectSidebarItems = storedProjects
+        refreshProjectSidebarGitBranches()
+
+        if preserveCurrentSurfaceTree {
+            if let startupProject {
+                selectedProjectSidebarItemID = startupProject.id
+            }
+            refreshRunningProcesses()
+            return
+        }
+
+        guard let initialProject = startupProject ?? storedProjects.first else {
+            selectedProjectSidebarItemID = nil
+            refreshRunningProcesses()
+            return
+        }
+
+        selectedProjectSidebarItemID = initialProject.id
+
+        if !startupPath.isEmpty {
+            refreshRunningProcesses()
+            return
+        }
+
+        guard let initialTree = makeProjectSurfaceTree(for: initialProject) else {
+            refreshRunningProcesses()
+            return
+        }
+        activateProjectSurfaceTree(initialTree)
+        refreshRunningProcesses()
+    }
+
+    private func bootstrapMainPanelTabs() {
+        let initialState = MainPanelTabState(
+            id: UUID(),
+            surfaceTree: surfaceTree
+        )
+        mainPanelTabStates = [initialState]
+        selectedMainPanelTabID = initialState.id
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+    }
+
+    private func selectedMainPanelTabIndex() -> Int? {
+        guard let selectedMainPanelTabID else { return nil }
+        return mainPanelTabStates.firstIndex(where: { $0.id == selectedMainPanelTabID })
+    }
+
+    private func workspaceKey(for projectID: UUID?) -> MainPanelWorkspaceKey {
+        if let projectID {
+            return .project(projectID)
+        }
+
+        return .unscoped
+    }
+
+    private var activeMainPanelWorkspaceKey: MainPanelWorkspaceKey {
+        workspaceKey(for: selectedProjectSidebarItemID)
+    }
+
+    private func startRunningProcessRefreshTimer() {
+        runningProcessRefreshTimer?.invalidate()
+        runningProcessRefreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refreshRunningProcesses()
+        }
+    }
+
+    private func isRunningSurface(_ surface: Ghostty.SurfaceView) -> Bool {
+        surface.needsConfirmQuit && !surface.processExited
+    }
+
+    private func workspaceProjectID(for key: MainPanelWorkspaceKey) -> UUID? {
+        switch key {
+        case .project(let projectID):
+            return projectID
+        case .unscoped:
+            return nil
+        }
+    }
+
+    private func runningItems(
+        for workspaceKey: MainPanelWorkspaceKey,
+        tabStates: [MainPanelTabState]
+    ) -> [RunningProcessItem] {
+        guard let projectID = workspaceProjectID(for: workspaceKey) else { return [] }
+
+        struct Candidate {
+            var item: RunningProcessItem
+            var tabIndex: Int
+            var surfaceOrder: Int
+            var focusInstant: ContinuousClock.Instant?
+        }
+
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(tabStates.count)
+
+        for (tabIndex, state) in tabStates.enumerated() {
+            let tabTitle: String = {
+                if let surface = state.surfaceTree.root?.leftmostLeaf() {
+                    if !surface.title.isEmpty {
+                        return surface.title
+                    }
+
+                    if let pwd = surface.pwd?.abbreviatedPath, !pwd.isEmpty {
+                        return pwd
+                    }
+                }
+
+                if tabStates.count == 1,
+                   let project = projectSidebarItems.first(where: { $0.id == projectID }) {
+                    return project.name
+                }
+
+                return "Tab \(tabIndex + 1)"
+            }()
+
+            for (surfaceOrder, surface) in state.surfaceTree.enumerated() where isRunningSurface(surface) {
+                let primaryText = surface.title.isEmpty ? tabTitle : surface.title
+                let secondaryText = surface.pwd?.abbreviatedPath
+                candidates.append(.init(
+                    item: .init(
+                        id: surface.id,
+                        projectID: projectID,
+                        tabID: state.id,
+                        tabTitle: tabTitle,
+                        primaryText: primaryText,
+                        secondaryText: secondaryText
+                    ),
+                    tabIndex: tabIndex,
+                    surfaceOrder: surfaceOrder,
+                    focusInstant: surface.focusInstant
+                ))
+            }
+        }
+
+        candidates.sort { lhs, rhs in
+            if lhs.tabIndex != rhs.tabIndex {
+                return lhs.tabIndex < rhs.tabIndex
+            }
+
+            switch (lhs.focusInstant, rhs.focusInstant) {
+            case let (l?, r?) where l != r:
+                return l > r
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                break
+            }
+
+            return lhs.surfaceOrder < rhs.surfaceOrder
+        }
+
+        return candidates.map(\.item)
+    }
+
+    private func refreshRunningProcesses() {
+        var statesByWorkspace = mainPanelTabStatesByWorkspace
+        statesByWorkspace[activeMainPanelWorkspaceKey] = mainPanelTabStates
+
+        var result: [UUID: [RunningProcessItem]] = [:]
+        var visitedProjects: Set<UUID> = []
+
+        for project in projectSidebarItems {
+            let workspaceKey: MainPanelWorkspaceKey = .project(project.id)
+            guard let states = statesByWorkspace[workspaceKey], !states.isEmpty else { continue }
+            let items = runningItems(for: workspaceKey, tabStates: states)
+            if !items.isEmpty {
+                result[project.id] = items
+            }
+            visitedProjects.insert(project.id)
+        }
+
+        let extraProjectKeys = statesByWorkspace.keys.compactMap { key -> UUID? in
+            guard case .project(let projectID) = key else { return nil }
+            guard !visitedProjects.contains(projectID) else { return nil }
+            return projectID
+        }.sorted { $0.uuidString < $1.uuidString }
+
+        for projectID in extraProjectKeys {
+            let workspaceKey: MainPanelWorkspaceKey = .project(projectID)
+            guard let states = statesByWorkspace[workspaceKey], !states.isEmpty else { continue }
+            let items = runningItems(for: workspaceKey, tabStates: states)
+            if !items.isEmpty {
+                result[projectID] = items
+            }
+        }
+
+        if runningProcessesByProjectID != result {
+            runningProcessesByProjectID = result
+        }
+    }
+
+    private func persistCurrentMainPanelWorkspaceState() {
+        let key = activeMainPanelWorkspaceKey
+        mainPanelTabStatesByWorkspace[key] = mainPanelTabStates
+        if let selectedMainPanelTabID {
+            selectedMainPanelTabIDByWorkspace[key] = selectedMainPanelTabID
+        } else {
+            selectedMainPanelTabIDByWorkspace.removeValue(forKey: key)
+        }
+    }
+
+    private func syncActiveMainPanelTabState() {
+        guard let index = selectedMainPanelTabIndex() else { return }
+        mainPanelTabStates[index].surfaceTree = surfaceTree
+        persistCurrentMainPanelWorkspaceState()
+        refreshRunningProcesses()
+    }
+
+    private func applyMainPanelTabState(_ state: MainPanelTabState) {
+        activateProjectSurfaceTree(state.surfaceTree)
+    }
+
+    private func applySelectedMainPanelTabState() {
+        guard let selectedMainPanelTabID,
+              let state = mainPanelTabStates.first(where: { $0.id == selectedMainPanelTabID }) else { return }
+        applyMainPanelTabState(state)
+    }
+
+    private func tabTitle(for state: MainPanelTabState, index: Int) -> String {
+        if let surface = state.surfaceTree.root?.leftmostLeaf() {
+            if !surface.title.isEmpty {
+                return surface.title
+            }
+
+            if let pwd = surface.pwd?.abbreviatedPath, !pwd.isEmpty {
+                return pwd
+            }
+        }
+
+        if mainPanelTabStates.count == 1,
+           let selectedProjectSidebarItemID,
+           let project = projectSidebarItems.first(where: { $0.id == selectedProjectSidebarItemID }) {
+            return project.name
+        }
+
+        return "Tab \(index + 1)"
+    }
+
+    private func refreshMainPanelTabs() {
+        mainPanelTabs = mainPanelTabStates.enumerated().map { index, state in
+            MainPanelTabItem(id: state.id, title: tabTitle(for: state, index: index))
+        }
+    }
+
+    private func projectName(for projectID: UUID?) -> String? {
+        guard let projectID else { return nil }
+        return projectSidebarItems.first(where: { $0.id == projectID })?.name
+    }
+
+    private func allWorkspaceTabStates() -> [(projectID: UUID?, states: [MainPanelTabState], selectedTabID: UUID?)] {
+        var statesByWorkspace = mainPanelTabStatesByWorkspace
+        statesByWorkspace[activeMainPanelWorkspaceKey] = mainPanelTabStates
+
+        var result: [(projectID: UUID?, states: [MainPanelTabState], selectedTabID: UUID?)] = []
+        var seenKeys: Set<MainPanelWorkspaceKey> = []
+
+        let activeKey = activeMainPanelWorkspaceKey
+        if let states = statesByWorkspace[activeKey], !states.isEmpty {
+            let selectedID = selectedMainPanelTabIDByWorkspace[activeKey] ?? selectedMainPanelTabID
+            result.append((workspaceProjectID(for: activeKey), states, selectedID))
+            seenKeys.insert(activeKey)
+        }
+
+        for project in projectSidebarItems {
+            let key: MainPanelWorkspaceKey = .project(project.id)
+            guard !seenKeys.contains(key),
+                  let states = statesByWorkspace[key],
+                  !states.isEmpty else { continue }
+            result.append((project.id, states, selectedMainPanelTabIDByWorkspace[key]))
+            seenKeys.insert(key)
+        }
+
+        if !seenKeys.contains(.unscoped),
+           let states = statesByWorkspace[.unscoped],
+           !states.isEmpty {
+            result.append((nil, states, selectedMainPanelTabIDByWorkspace[.unscoped]))
+            seenKeys.insert(.unscoped)
+        }
+
+        for (key, states) in statesByWorkspace where !seenKeys.contains(key) {
+            guard !states.isEmpty else { continue }
+            result.append((workspaceProjectID(for: key), states, selectedMainPanelTabIDByWorkspace[key]))
+            seenKeys.insert(key)
+        }
+
+        return result
+    }
+
+    private func tabTitle(
+        for state: MainPanelTabState,
+        tabIndex: Int,
+        workspaceProjectID: UUID?,
+        stateCount: Int
+    ) -> String {
+        if let surface = state.surfaceTree.root?.leftmostLeaf() {
+            if !surface.title.isEmpty {
+                return surface.title
+            }
+
+            if let pwd = surface.pwd?.abbreviatedPath, !pwd.isEmpty {
+                return pwd
+            }
+        }
+
+        if stateCount == 1,
+           let projectID = workspaceProjectID,
+           let project = projectSidebarItems.first(where: { $0.id == projectID }) {
+            return project.name
+        }
+
+        return "Tab \(tabIndex + 1)"
+    }
+
+    private func terminalOverviewThumbnail(for surface: Ghostty.SurfaceView) -> NSImage? {
+        if let cached = terminalOverviewThumbnailCache[surface.id] {
+            return cached
+        }
+
+        guard let snapshot = surface.asImage else { return nil }
+        let scaled = downscaleTerminalOverviewImage(snapshot, maxDimension: 520)
+        terminalOverviewThumbnailCache[surface.id] = scaled
+        return scaled
+    }
+
+    private func downscaleTerminalOverviewImage(_ image: NSImage, maxDimension: CGFloat) -> NSImage {
+        guard image.size.width > 0, image.size.height > 0 else { return image }
+
+        let scale = min(1, maxDimension / max(image.size.width, image.size.height))
+        guard scale < 1 else { return image }
+
+        let targetSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        let output = NSImage(size: targetSize)
+        output.lockFocus()
+        defer { output.unlockFocus() }
+        image.draw(
+            in: NSRect(origin: .zero, size: targetSize),
+            from: NSRect(origin: .zero, size: image.size),
+            operation: .copy,
+            fraction: 1
+        )
+        return output
+    }
+
+    private func collectTerminalOverviewItems() -> [TerminalOverviewItem] {
+        for controller in TerminalController.all {
+            controller.syncActiveMainPanelTabState()
+        }
+
+        var items: [TerminalOverviewItem] = []
+        items.reserveCapacity(64)
+
+        for controller in TerminalController.all {
+            let workspaceStates = controller.allWorkspaceTabStates()
+
+            for workspaceState in workspaceStates {
+                for (tabIndex, tabState) in workspaceState.states.enumerated() {
+                    let tabTitle = controller.tabTitle(
+                        for: tabState,
+                        tabIndex: tabIndex,
+                        workspaceProjectID: workspaceState.projectID,
+                        stateCount: workspaceState.states.count
+                    )
+
+                    for surface in tabState.surfaceTree {
+                        let title: String = {
+                            if !surface.title.isEmpty {
+                                return surface.title
+                            }
+
+                            if let cwd = surface.pwd?.abbreviatedPath, !cwd.isEmpty {
+                                return cwd
+                            }
+
+                            return tabTitle
+                        }()
+
+                        let status: TerminalOverviewItem.Status = (surface.needsConfirmQuit && !surface.processExited) ? .running : .idle
+                        let cwd = surface.pwd?.abbreviatedPath
+                        let projectName = controller.projectName(for: workspaceState.projectID)
+
+                        items.append(.init(
+                            id: UUID(),
+                            controllerID: controller.controllerID,
+                            projectID: workspaceState.projectID,
+                            tabID: tabState.id,
+                            surfaceID: surface.id,
+                            title: title,
+                            cwd: cwd,
+                            projectName: projectName,
+                            tabTitle: tabTitle,
+                            status: status,
+                            thumbnail: controller.terminalOverviewThumbnail(for: surface)
+                        ))
+                    }
+                }
+            }
+        }
+
+        items.sort { lhs, rhs in
+            if lhs.status != rhs.status {
+                return lhs.status == .running
+            }
+
+            let lhsProject = lhs.projectName ?? ""
+            let rhsProject = rhs.projectName ?? ""
+            if lhsProject != rhsProject {
+                return lhsProject.localizedCaseInsensitiveCompare(rhsProject) == .orderedAscending
+            }
+
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+
+        return items
+    }
+
+    private func makeMainPanelSurfaceTree(
+        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration?
+    ) -> SplitTree<Ghostty.SurfaceView>? {
+        guard let ghosttyApp = ghostty.app else { return nil }
+        var config = baseConfig ?? Ghostty.SurfaceConfiguration()
+
+        if let selectedProjectID = selectedProjectSidebarItemID,
+           let selectedProject = projectSidebarItems.first(where: { $0.id == selectedProjectID }) {
+            config.workingDirectory = selectedProject.path
+        }
+
+        return .init(view: Ghostty.SurfaceView(ghosttyApp, baseConfig: config))
+    }
+
+    private func addMainPanelTab(withBaseConfig baseConfig: Ghostty.SurfaceConfiguration?) {
+        guard let newTree = makeMainPanelSurfaceTree(withBaseConfig: baseConfig) else { return }
+
+        syncActiveMainPanelTabState()
+
+        let newTab = MainPanelTabState(
+            id: UUID(),
+            surfaceTree: newTree
+        )
+
+        mainPanelTabStates.append(newTab)
+        selectedMainPanelTabID = newTab.id
+        activateProjectSurfaceTree(newTree)
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let window = self?.window else { return }
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func closeMainPanelTabImmediately(id: UUID) {
+        guard let index = mainPanelTabStates.firstIndex(where: { $0.id == id }) else { return }
+        guard mainPanelTabStates.count > 1 else {
+            if totalMainPanelTabCount() > 1 {
+                closeLastTabInCurrentWorkspace()
+                return
+            }
+            closeWindow(nil)
+            return
+        }
+
+        syncActiveMainPanelTabState()
+        let wasSelected = selectedMainPanelTabID == id
+        mainPanelTabStates.remove(at: index)
+
+        if wasSelected {
+            let nextIndex = min(index, mainPanelTabStates.count - 1)
+            let nextTab = mainPanelTabStates[nextIndex]
+            selectedMainPanelTabID = nextTab.id
+            applyMainPanelTabState(nextTab)
+        }
+
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+    }
+
+    private func tabNeedsCloseConfirmation(_ state: MainPanelTabState) -> Bool {
+        state.surfaceTree.contains(where: { $0.needsConfirmQuit })
+    }
+
+    private func allMainPanelTabStates() -> [MainPanelTabState] {
+        var allStates: [MainPanelTabState] = mainPanelTabStates
+        for (key, states) in mainPanelTabStatesByWorkspace where key != activeMainPanelWorkspaceKey {
+            allStates.append(contentsOf: states)
+        }
+        return allStates
+    }
+
+    private func totalMainPanelTabCount() -> Int {
+        allMainPanelTabStates().count
+    }
+
+    private func anyMainPanelTabNeedsCloseConfirmation() -> Bool {
+        allMainPanelTabStates().contains(where: tabNeedsCloseConfirmation(_:))
+    }
+
+    private func nextWorkspaceKey(afterClosing keyToRemove: MainPanelWorkspaceKey) -> MainPanelWorkspaceKey? {
+        for project in projectSidebarItems {
+            let candidate: MainPanelWorkspaceKey = .project(project.id)
+            guard candidate != keyToRemove else { continue }
+            if let states = mainPanelTabStatesByWorkspace[candidate], !states.isEmpty {
+                return candidate
+            }
+        }
+
+        if keyToRemove != .unscoped,
+           let states = mainPanelTabStatesByWorkspace[.unscoped], !states.isEmpty {
+            return .unscoped
+        }
+
+        for (candidate, states) in mainPanelTabStatesByWorkspace where candidate != keyToRemove {
+            if !states.isEmpty {
+                return candidate
+            }
+        }
+
+        return nil
+    }
+
+    private func closeLastTabInCurrentWorkspace() {
+        let closingWorkspace = activeMainPanelWorkspaceKey
+        mainPanelTabStatesByWorkspace.removeValue(forKey: closingWorkspace)
+        selectedMainPanelTabIDByWorkspace.removeValue(forKey: closingWorkspace)
+
+        guard let nextWorkspace = nextWorkspaceKey(afterClosing: closingWorkspace),
+              let nextStates = mainPanelTabStatesByWorkspace[nextWorkspace],
+              !nextStates.isEmpty else {
+            closeWindow(nil)
+            return
+        }
+
+        switch nextWorkspace {
+        case .project(let projectID):
+            selectedProjectSidebarItemID = projectID
+        case .unscoped:
+            selectedProjectSidebarItemID = nil
+        }
+
+        mainPanelTabStates = nextStates
+        if let restoredTabID = selectedMainPanelTabIDByWorkspace[nextWorkspace],
+           nextStates.contains(where: { $0.id == restoredTabID }) {
+            selectedMainPanelTabID = restoredTabID
+        } else {
+            selectedMainPanelTabID = nextStates.first?.id
+        }
+        applySelectedMainPanelTabState()
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+    }
+
+    private func activateProjectSurfaceTree(_ tree: SplitTree<Ghostty.SurfaceView>) {
+        let previousFocusedSurface = focusedSurface
+        surfaceTree = tree
+        let targetSurface = tree.root?.leftmostLeaf()
+        focusedSurface = targetSurface
+        if let targetSurface {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: targetSurface, from: previousFocusedSurface)
+            }
+        }
+    }
+
+    private func makeProjectSurfaceTree(for project: ProjectSidebarItem) -> SplitTree<Ghostty.SurfaceView>? {
+        guard let ghosttyApp = ghostty.app else { return nil }
+        var config = Ghostty.SurfaceConfiguration()
+        config.workingDirectory = project.path
+        return .init(view: Ghostty.SurfaceView(ghosttyApp, baseConfig: config))
+    }
+
+    private func addProjectSidebarItem(path: String) {
+        let normalizedPath = normalizedProjectPath(path)
+        guard !normalizedPath.isEmpty else { return }
+
+        if let existingProject = projectSidebarItems.first(
+            where: { projectPathKey($0.path) == projectPathKey(normalizedPath) }
+        ) {
+            selectProjectSidebarItem(id: existingProject.id)
+            return
+        }
+
+        let project = ProjectSidebarItem(
+            id: UUID(),
+            name: projectNameFromPath(normalizedPath),
+            path: normalizedPath
+        )
+        projectSidebarItems.append(project)
+        Self.persistProjectSidebarItems(projectSidebarItems)
+        refreshProjectSidebarGitBranches(for: [project.id])
+        selectProjectSidebarItem(id: project.id)
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
+    }
+
+    private func refreshProjectSidebarGitBranches(for projectIDs: [UUID]? = nil) {
+        let snapshot: [ProjectSidebarItem]
+        if let projectIDs {
+            let idSet = Set(projectIDs)
+            snapshot = projectSidebarItems.filter { idSet.contains($0.id) }
+        } else {
+            snapshot = projectSidebarItems
+        }
+        guard !snapshot.isEmpty else { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let branchesByProjectID = snapshot.map { project in
+                (project.id, Self.currentGitBranch(at: project.path))
+            }
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+
+                for (projectID, gitBranch) in branchesByProjectID {
+                    guard let index = self.projectSidebarItems.firstIndex(where: { $0.id == projectID }) else { continue }
+                    self.projectSidebarItems[index].gitBranch = gitBranch
+                }
+            }
+        }
+    }
+
+    private static func currentGitBranch(at path: String) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["git", "-C", path, "branch", "--show-current"]
+
+        let outputPipe = Pipe()
+        task.standardOutput = outputPipe
+        task.standardError = Pipe()
+
+        do {
+            try task.run()
+        } catch {
+            return nil
+        }
+
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { return nil }
+
+        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let branch = String(data: output, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !branch.isEmpty
+        else {
+            return nil
+        }
+
+        return branch
+    }
+
+    private func normalizedProjectPath(_ path: String) -> String {
+        var result = (path as NSString).expandingTildeInPath
+        result = (result as NSString).standardizingPath
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.count > 1 && result.hasSuffix("/") {
+            result.removeLast()
+        }
+        return result
+    }
+
+    private func projectNameFromPath(_ path: String) -> String {
+        let projectName = URL(fileURLWithPath: path).lastPathComponent
+        return projectName.isEmpty ? path : projectName
+    }
+
+    private func projectPathKey(_ path: String) -> String {
+        normalizedProjectPath(path).replacingOccurrences(of: "\\", with: "/").lowercased()
+    }
+
+    private static func loadPersistedProjectSidebarItems() -> [ProjectSidebarItem] {
+        guard let data = UserDefaults.standard.data(forKey: projectSidebarStorageKey) else {
+            return []
+        }
+
+        do {
+            return try JSONDecoder().decode([ProjectSidebarItem].self, from: data)
+        } catch {
+            Ghostty.logger.warning("failed to decode project sidebar entries: \(error)")
+            return []
+        }
+    }
+
+    private static func persistProjectSidebarItems(_ projects: [ProjectSidebarItem]) {
+        do {
+            let data = try JSONEncoder().encode(projects)
+            UserDefaults.standard.set(data, forKey: projectSidebarStorageKey)
+        } catch {
+            Ghostty.logger.warning("failed to persist project sidebar entries: \(error)")
+        }
     }
 
     // MARK: Terminal Creation
@@ -366,122 +1262,122 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         from parent: NSWindow? = nil,
         withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil
     ) -> TerminalController? {
-        // Making sure that we're dealing with a TerminalController. If not,
-        // then we just create a new window.
         guard let parent,
               let parentController = parent.windowController as? TerminalController else {
             return newWindow(ghostty, withBaseConfig: baseConfig, withParent: parent)
         }
 
-        // If our parent is in non-native fullscreen, then new tabs do not work.
-        // See: https://github.com/mitchellh/ghostty/issues/392
-        if let fullscreenStyle = parentController.fullscreenStyle,
-           fullscreenStyle.isFullscreen && !fullscreenStyle.supportsTabs {
-            let alert = NSAlert()
-            alert.messageText = "Cannot Create New Tab"
-            alert.informativeText = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again."
-            alert.addButton(withTitle: "OK")
-            alert.alertStyle = .warning
-            alert.beginSheetModal(for: parent)
-            return nil
+        parentController.addMainPanelTab(withBaseConfig: baseConfig)
+        return parentController
+    }
+
+    override func refreshTerminalOverviewItems() {
+        terminalOverviewItems = collectTerminalOverviewItems()
+    }
+
+    override func activateTerminalOverviewItem(id: UUID) {
+        guard let item = terminalOverviewItems.first(where: { $0.id == id }) else {
+            terminalOverviewIsShowing = false
+            return
         }
 
-        // Create a new window and add it to the parent
-        let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
-        guard let window = controller.window else { return controller }
+        activateTerminalOverviewDestination(item)
+    }
 
-        // If the parent is miniaturized, then macOS exhibits really strange behaviors
-        // so we have to bring it back out.
-        if (parent.isMiniaturized) { parent.deminiaturize(self) }
+    @IBAction override func toggleTabOverview(_ sender: Any?) {
+        terminalOverviewIsShowing.toggle()
+        if terminalOverviewIsShowing {
+            refreshTerminalOverviewItems()
+        }
+    }
 
-        // If our parent tab group already has this window, macOS added it and
-        // we need to remove it so we can set the correct order in the next line.
-        // If we don't do this, macOS gets really confused and the tabbedWindows
-        // state becomes incorrect.
-        //
-        // At the time of writing this code, the only known case this happens
-        // is when the "+" button is clicked in the tab bar.
-        if let tg = parent.tabGroup,
-           tg.windows.firstIndex(of: window) != nil {
-            tg.removeWindow(window)
+    private func activateTerminalOverviewDestination(_ item: TerminalOverviewItem) {
+        guard let targetController = TerminalController.all.first(where: { $0.controllerID == item.controllerID }) else {
+            terminalOverviewIsShowing = false
+            return
         }
 
-        // If we don't allow tabs then we create a new window instead.
-        if (window.tabbingMode != .disallowed) {
-            // Add the window to the tab group and show it.
-            switch ghostty.config.windowNewTabPosition {
-            case "end":
-                // If we already have a tab group and we want the new tab to open at the end,
-                // then we use the last window in the tab group as the parent.
-                if let last = parent.tabGroup?.windows.last {
-                    last.addTabbedWindow(window, ordered: .above)
-                } else {
-                    fallthrough
-                }
+        for controller in TerminalController.all {
+            controller.terminalOverviewIsShowing = false
+        }
 
-            case "current": fallthrough
-            default:
-                parent.addTabbedWindow(window, ordered: .above)
+        targetController.syncActiveMainPanelTabState()
+        guard targetController.selectWorkspaceContaining(tabID: item.tabID, preferredProjectID: item.projectID) else {
+            return
+        }
+
+        if targetController.selectedMainPanelTabID != item.tabID {
+            targetController.selectMainPanelTab(id: item.tabID)
+        }
+
+        guard let targetSurface = targetController.surfaceTree.first(where: { $0.id == item.surfaceID }) else { return }
+
+        if let window = targetController.window {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
             }
+            window.makeKeyAndOrderFront(nil)
         }
+        NSApp.activate(ignoringOtherApps: true)
 
-        // We're dispatching this async because otherwise the lastCascadePoint doesn't
-        // take effect. Our best theory is there is some next-event-loop-tick logic
-        // that Cocoa is doing that we need to be after.
+        let previousFocusedSurface = targetController.focusedSurface
+        targetController.focusedSurface = targetSurface
         DispatchQueue.main.async {
-            // Only cascade if we aren't fullscreen and are alone in the tab group.
-            if !window.styleMask.contains(.fullScreen) &&
-                window.tabGroup?.windows.count ?? 1 == 1 {
-                Self.lastCascadePoint = window.cascadeTopLeft(from: Self.lastCascadePoint)
+            Ghostty.moveFocus(to: targetSurface, from: previousFocusedSurface)
+        }
+    }
+
+    private func selectWorkspaceContaining(tabID: UUID, preferredProjectID: UUID?) -> Bool {
+        syncActiveMainPanelTabState()
+
+        var statesByWorkspace = mainPanelTabStatesByWorkspace
+        statesByWorkspace[activeMainPanelWorkspaceKey] = mainPanelTabStates
+
+        let preferredKey = workspaceKey(for: preferredProjectID)
+
+        func statesContainTab(_ states: [MainPanelTabState]) -> Bool {
+            states.contains(where: { $0.id == tabID })
+        }
+
+        let targetKey: MainPanelWorkspaceKey? = {
+            if let preferredStates = statesByWorkspace[preferredKey], statesContainTab(preferredStates) {
+                return preferredKey
             }
 
-            controller.showWindow(self)
-            window.makeKeyAndOrderFront(self)
-
-            // We also activate our app so that it becomes front. This may be
-            // necessary for the dock menu.
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
-        // It takes an event loop cycle until the macOS tabGroup state becomes
-        // consistent which causes our tab labeling to be off when the "+" button
-        // is used in the tab bar. This fixes that. If we can find a more robust
-        // solution we should do that.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            controller.relabelTabs()
-        }
-
-        // Setup our undo
-        if let undoManager = parentController.undoManager {
-            undoManager.setActionName("New Tab")
-            undoManager.registerUndo(
-                withTarget: controller,
-                expiresAfter: controller.undoExpiration
-            ) { target in
-                // Close the tab when undoing. We do this in a DispatchQueue because
-                // for some people on macOS Tahoe this caused a crash and the queue
-                // fixes it.
-                // https://github.com/ghostty-org/ghostty/pull/9512
-                DispatchQueue.main.async {
-                    undoManager.disableUndoRegistration {
-                        target.closeTab(nil)
-                    }
-                }
-
-                // Register redo action
-                undoManager.registerUndo(
-                    withTarget: ghostty,
-                    expiresAfter: target.undoExpiration
-                ) { ghostty in
-                    _ = TerminalController.newTab(
-                        ghostty,
-                        from: parent,
-                        withBaseConfig: baseConfig)
-                }
+            for (key, states) in statesByWorkspace where statesContainTab(states) {
+                return key
             }
+
+            return nil
+        }()
+
+        guard let targetKey, let targetStates = statesByWorkspace[targetKey], !targetStates.isEmpty else {
+            return false
         }
 
-        return controller
+        if targetKey != activeMainPanelWorkspaceKey {
+            switch targetKey {
+            case .project(let projectID):
+                selectedProjectSidebarItemID = projectID
+            case .unscoped:
+                selectedProjectSidebarItemID = nil
+            }
+
+            mainPanelTabStates = targetStates
+            if let restoredTabID = selectedMainPanelTabIDByWorkspace[targetKey],
+               targetStates.contains(where: { $0.id == restoredTabID }) {
+                selectedMainPanelTabID = restoredTabID
+            } else {
+                selectedMainPanelTabID = targetStates.first?.id
+            }
+
+            applySelectedMainPanelTabState()
+            persistCurrentMainPanelWorkspaceState()
+            refreshMainPanelTabs()
+            refreshRunningProcesses()
+        }
+
+        return mainPanelTabStates.contains(where: { $0.id == tabID })
     }
     
     //MARK: - Methods
@@ -624,135 +1520,49 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        // More than 1 window means we have tabs and we're closing a tab
-        if window?.tabGroup?.windows.count ?? 0 > 1 {
+        // If any other project/tab still exists, close only the current tab.
+        if totalMainPanelTabCount() > 1 {
             closeTab(nil)
             return
         }
 
-        // 1 window, closing the window
+        // No additional tabs, closing the window.
         closeWindow(nil)
     }
 
     func closeTabImmediately(registerRedo: Bool = true) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup,
-                tabGroup.windows.count > 1 else {
+        guard let selectedMainPanelTabID else {
             closeWindowImmediately()
             return
         }
 
-        // Undo
-        if let undoManager, let undoState {
-            // Register undo action to restore the tab
-            undoManager.setActionName("Close Tab")
-            undoManager.registerUndo(
-                withTarget: ghostty,
-                expiresAfter: undoExpiration
-            ) { ghostty in
-                let newController = TerminalController(ghostty, with: undoState)
-
-                if registerRedo {
-                    undoManager.registerUndo(
-                        withTarget: newController,
-                        expiresAfter: newController.undoExpiration
-                    ) { target in
-                        target.closeTabImmediately()
-                    }
-                }
-            }
-        }
-
-        window.close()
+        _ = registerRedo
+        closeMainPanelTabImmediately(id: selectedMainPanelTabID)
     }
 
     private func closeOtherTabsImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard tabGroup.windows.count > 1 else { return }
+        guard let selectedMainPanelTabID else { return }
+        guard mainPanelTabStates.count > 1 else { return }
 
-        // Start an undo grouping
-        if let undoManager {
-            undoManager.beginUndoGrouping()
+        syncActiveMainPanelTabState()
+        mainPanelTabStates = mainPanelTabStates.filter { $0.id == selectedMainPanelTabID }
+        if let selectedState = mainPanelTabStates.first {
+            applyMainPanelTabState(selectedState)
         }
-        defer {
-            undoManager?.endUndoGrouping()
-        }
-
-        // Iterate through all tabs except the current one.
-        for window in tabGroup.windows where window != self.window {
-            // We ignore any non-terminal tabs. They don't currently exist and we can't
-            // properly undo them anyways so I'd rather ignore them and get a bug report
-            // later if and when we introduce non-terminal tabs.
-            if let controller = window.windowController as? TerminalController {
-                // We must not register a redo, because it messes with our own redo
-                // that we register later.
-                controller.closeTabImmediately(registerRedo: false)
-            }
-        }
-
-        if let undoManager {
-            undoManager.setActionName("Close Other Tabs")
-
-            // We need to register an undo that refocuses this window. Otherwise, the
-            // undo operation above for each tab will steal focus.
-            undoManager.registerUndo(
-                withTarget: self,
-                expiresAfter: undoExpiration
-            ) { target in
-                DispatchQueue.main.async {
-                    target.window?.makeKeyAndOrderFront(nil)
-                }
-
-                // Register redo action
-                undoManager.registerUndo(
-                    withTarget: target,
-                    expiresAfter: target.undoExpiration
-                ) { target in
-                    target.closeOtherTabsImmediately()
-                }
-            }
-        }
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     private func closeTabsOnTheRightImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
+        guard let currentIndex = selectedMainPanelTabIndex() else { return }
+        guard currentIndex < mainPanelTabStates.count - 1 else { return }
 
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
-        guard !tabsToClose.isEmpty else { return }
-
-        undoManager?.beginUndoGrouping()
-        defer {
-            undoManager?.endUndoGrouping()
-        }
-
-        for (_, candidate) in tabsToClose {
-            if let controller = candidate.windowController as? TerminalController {
-                controller.closeTabImmediately(registerRedo: false)
-            }
-        }
-
-        if let undoManager {
-            undoManager.setActionName("Close Tabs to the Right")
-
-            undoManager.registerUndo(
-                withTarget: self,
-                expiresAfter: undoExpiration
-            ) { target in
-                DispatchQueue.main.async {
-                    target.window?.makeKeyAndOrderFront(nil)
-                }
-
-                undoManager.registerUndo(
-                    withTarget: target,
-                    expiresAfter: target.undoExpiration
-                ) { target in
-                    target.closeTabsOnTheRightImmediately()
-                }
-            }
-        }
+        syncActiveMainPanelTabState()
+        mainPanelTabStates.removeSubrange((currentIndex + 1)..<mainPanelTabStates.count)
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
+        refreshRunningProcesses()
     }
 
     /// Closes the current window (including any other tabs) immediately and without
@@ -894,8 +1704,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // needs quit confirmation. This lets us attach the confirmation to something
         // that is running.
         guard let confirmWindow = all
-            .first(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })?
-            .surfaceTree.first(where: { $0.needsConfirmQuit })?
+            .first(where: { $0.anyMainPanelTabNeedsCloseConfirmation() })?
             .window
         else {
             closeAllWindowsImmediately()
@@ -1197,8 +2006,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeTab(_ sender: Any?) {
-        guard let window = window else { return }
-        guard window.tabGroup?.windows.count ?? 0 > 1 else {
+        guard totalMainPanelTabCount() > 1 else {
             closeWindow(sender)
             return
         }
@@ -1217,25 +2025,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeOtherTabs(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
+        guard mainPanelTabStates.count > 1 else { return }
+        guard let selectedMainPanelTabID else { return }
 
-        // If we only have one window then we have no other tabs to close
-        guard tabGroup.windows.count > 1 else { return }
+        let tabsToClose = mainPanelTabStates.filter { $0.id != selectedMainPanelTabID }
+        let needsConfirm = tabsToClose.contains(where: tabNeedsCloseConfirmation(_:))
 
-        // Check if we have to confirm close.
-        guard tabGroup.windows.contains(where: { window in
-            // Ignore ourself
-            if window == self.window { return false }
-
-            // Ignore non-terminals
-            guard let controller = window.windowController as? TerminalController else {
-                return false
-            }
-
-            // Check if any surfaces require confirmation
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
-        }) else {
+        if !needsConfirm {
             self.closeOtherTabsImmediately()
             return
         }
@@ -1249,20 +2045,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeTabsOnTheRight(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
+        guard let currentIndex = selectedMainPanelTabIndex() else { return }
+        guard currentIndex < mainPanelTabStates.count - 1 else { return }
 
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
-        guard !tabsToClose.isEmpty else { return }
-
-        let needsConfirm = tabsToClose.contains { (_, candidate) in
-            guard let controller = candidate.windowController as? TerminalController else {
-                return false
-            }
-
-            return controller.surfaceTree.contains(where: { $0.needsConfirmQuit })
-        }
+        let tabsToClose = mainPanelTabStates[(currentIndex + 1)...]
+        let needsConfirm = tabsToClose.contains(where: tabNeedsCloseConfirmation(_:))
 
         if !needsConfirm {
             self.closeTabsOnTheRightImmediately()
@@ -1283,23 +2070,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction override func closeWindow(_ sender: Any?) {
-        guard let window = window else { return }
-
-        // We need to check all the windows in our tab group for confirmation
-        // if we're closing the window. If we don't have a tabgroup for any
-        // reason we check ourselves.
-        let windows: [NSWindow] = window.tabGroup?.windows ?? [window]
-        guard let confirmController = windows
-            .compactMap({ $0.windowController as? TerminalController })
-            .first(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) })
-        else {
+        syncActiveMainPanelTabState()
+        let needsConfirm = anyMainPanelTabNeedsCloseConfirmation()
+        if !needsConfirm {
             closeWindowImmediately()
             return
         }
 
-        // We call confirmClose on the proper controller so the alert is
-        // attached to the window that needs confirmation.
-        confirmController.confirmClose(
+        confirmClose(
             messageText: "Close Window?",
             informativeText: "All terminal sessions in this window will be terminated.",
         ) {
@@ -1354,102 +2132,66 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @objc private func onMoveTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
-        guard let window = self.window else { return }
 
         // Get the move action
         guard let action = notification.userInfo?[Notification.Name.GhosttyMoveTabKey] as? Ghostty.Action.MoveTab else { return }
         guard action.amount != 0 else { return }
 
-        // Determine our current selected index
-        guard let windowController = window.windowController else { return }
-        guard let tabGroup = windowController.window?.tabGroup else { return }
-        guard let selectedWindow = tabGroup.selectedWindow else { return }
-        let tabbedWindows = tabGroup.windows
-        guard tabbedWindows.count > 0 else { return }
-        guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
+        syncActiveMainPanelTabState()
+        guard let selectedIndex = selectedMainPanelTabIndex() else { return }
+        guard !mainPanelTabStates.isEmpty else { return }
 
         // Determine the final index we want to insert our tab
         let finalIndex: Int
         if action.amount < 0 {
             finalIndex = selectedIndex - min(selectedIndex, -action.amount)
         } else {
-            let remaining: Int = tabbedWindows.count - 1 - selectedIndex
+            let remaining: Int = mainPanelTabStates.count - 1 - selectedIndex
             finalIndex = selectedIndex + min(remaining, action.amount)
         }
 
         // If our index is the same we do nothing
         guard finalIndex != selectedIndex else { return }
 
-        // Get our target window
-        let targetWindow = tabbedWindows[finalIndex]
-
-        // Moving tabs on macOS 26 RC causes very nasty visual glitches in the titlebar tabs.
-        // I believe this is due to messed up constraints for our hacky tab bar. I'd like to
-        // find a better workaround. For now, this improves things dramatically.
-        //
-        // Reproduction: titlebar tabs, create two tabs, "move tab left"
-        if #available(macOS 26, *) {
-            if window is TitlebarTabsTahoeTerminalWindow {
-                tabGroup.removeWindow(selectedWindow)
-                targetWindow.addTabbedWindow(selectedWindow, ordered: action.amount < 0 ? .below : .above)
-                DispatchQueue.main.async {
-                    selectedWindow.makeKey()
-                }
-
-                return
-            }
-        }
-
-        // Begin a group of window operations to minimize visual updates
-        NSAnimationContext.beginGrouping()
-        NSAnimationContext.current.duration = 0
-
-        // Remove and re-add the window in the correct position
-        tabGroup.removeWindow(selectedWindow)
-        targetWindow.addTabbedWindow(selectedWindow, ordered: action.amount < 0 ? .below : .above)
-
-        // Ensure our window remains selected
-        selectedWindow.makeKey()
-
-        NSAnimationContext.endGrouping()
+        let movedState = mainPanelTabStates.remove(at: selectedIndex)
+        mainPanelTabStates.insert(movedState, at: finalIndex)
+        selectedMainPanelTabID = movedState.id
+        persistCurrentMainPanelWorkspaceState()
+        refreshMainPanelTabs()
     }
 
     @objc private func onGotoTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
-        guard let window = self.window else { return }
 
         // Get the tab index from the notification
         guard let tabEnumAny = notification.userInfo?[Ghostty.Notification.GotoTabKey] else { return }
         guard let tabEnum = tabEnumAny as? ghostty_action_goto_tab_e else { return }
         let tabIndex: Int32 = tabEnum.rawValue
 
-        guard let windowController = window.windowController else { return }
-        guard let tabGroup = windowController.window?.tabGroup else { return }
-        let tabbedWindows = tabGroup.windows
+        guard !mainPanelTabStates.isEmpty else { return }
 
         // This will be the index we want to actual go to
         let finalIndex: Int
 
         // An index that is invalid is used to signal some special values.
         if (tabIndex <= 0) {
-            guard let selectedWindow = tabGroup.selectedWindow else { return }
-            guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
+            guard let selectedIndex = selectedMainPanelTabIndex() else { return }
 
             if (tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue) {
                 if (selectedIndex == 0) {
-                    finalIndex = tabbedWindows.count - 1
+                    finalIndex = mainPanelTabStates.count - 1
                 } else {
                     finalIndex = selectedIndex - 1
                 }
             } else if (tabIndex == GHOSTTY_GOTO_TAB_NEXT.rawValue) {
-                if (selectedIndex == tabbedWindows.count - 1) {
+                if (selectedIndex == mainPanelTabStates.count - 1) {
                     finalIndex = 0
                 } else {
                     finalIndex = selectedIndex + 1
                 }
             } else if (tabIndex == GHOSTTY_GOTO_TAB_LAST.rawValue) {
-                finalIndex = tabbedWindows.count - 1
+                finalIndex = mainPanelTabStates.count - 1
             } else {
                 return
             }
@@ -1458,12 +2200,63 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             guard tabIndex >= 1 else { return }
 
             // If our index is outside our boundary then we use the max
-            finalIndex = min(Int(tabIndex - 1), tabbedWindows.count - 1)
+            finalIndex = min(Int(tabIndex - 1), mainPanelTabStates.count - 1)
         }
 
         guard finalIndex >= 0 else { return }
-        let targetWindow = tabbedWindows[finalIndex]
-        targetWindow.makeKeyAndOrderFront(nil)
+        selectMainPanelTab(id: mainPanelTabStates[finalIndex].id)
+    }
+
+    @objc private func onGotoProject(notification: SwiftUI.Notification) {
+        guard let target = notification.object as? Ghostty.SurfaceView else { return }
+        guard target == self.focusedSurface else { return }
+
+        guard let projectEnumAny = notification.userInfo?[Ghostty.Notification.GotoProjectKey] else { return }
+        guard let projectEnum = projectEnumAny as? ghostty_action_goto_project_e else { return }
+        guard !projectSidebarItems.isEmpty else { return }
+
+        let selectedIndex: Int? = selectedProjectSidebarItemID.flatMap { selectedID in
+            projectSidebarItems.firstIndex(where: { $0.id == selectedID })
+        }
+        let projectIndex: Int32 = projectEnum.rawValue
+        let finalIndex: Int
+
+        if (projectIndex <= 0) {
+            switch projectIndex {
+            case GHOSTTY_GOTO_PROJECT_PREVIOUS.rawValue:
+                guard projectSidebarItems.count > 1 else { return }
+                if let selectedIndex {
+                    finalIndex = selectedIndex == 0 ? projectSidebarItems.count - 1 : selectedIndex - 1
+                } else {
+                    finalIndex = projectSidebarItems.count - 1
+                }
+
+            case GHOSTTY_GOTO_PROJECT_NEXT.rawValue:
+                guard projectSidebarItems.count > 1 else { return }
+                if let selectedIndex {
+                    finalIndex = selectedIndex == projectSidebarItems.count - 1 ? 0 : selectedIndex + 1
+                } else {
+                    finalIndex = 0
+                }
+
+            case GHOSTTY_GOTO_PROJECT_LAST.rawValue:
+                finalIndex = projectSidebarItems.count - 1
+
+            default:
+                return
+            }
+        } else {
+            finalIndex = min(Int(projectIndex - 1), projectSidebarItems.count - 1)
+        }
+
+        guard finalIndex >= 0, finalIndex < projectSidebarItems.count else { return }
+        selectProjectSidebarItem(id: projectSidebarItems[finalIndex].id)
+    }
+
+    @objc private func onToggleTabOverview(notification: SwiftUI.Notification) {
+        guard let target = notification.object as? Ghostty.SurfaceView else { return }
+        guard surfaceTree.contains(target) else { return }
+        toggleTabOverview(nil)
     }
 
     @objc private func onCloseTab(notification: SwiftUI.Notification) {
@@ -1547,9 +2340,8 @@ extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(closeTabsOnTheRight):
-            guard let window, let tabGroup = window.tabGroup else { return false }
-            guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }
-            return tabGroup.windows.enumerated().contains { $0.offset > currentIndex }
+            guard let currentIndex = selectedMainPanelTabIndex() else { return false }
+            return currentIndex < mainPanelTabStates.count - 1
             
         case #selector(returnToDefaultSize):
             guard let window else { return false }

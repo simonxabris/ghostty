@@ -1,6 +1,7 @@
 import SwiftUI
 import GhosttyKit
 import os
+import AppKit
 
 /// This delegate is notified of actions and property changes regarding the terminal view. This
 /// delegate is optional and can be used by a TerminalView caller to react to changes such as
@@ -35,6 +36,103 @@ protocol TerminalViewModel: ObservableObject {
     
     /// The update overlay should be visible.
     var updateOverlayIsVisible: Bool { get }
+
+    /// Whether to show the project sidebar in the terminal workspace.
+    var showsProjectSidebar: Bool { get }
+
+    /// Whether the project sidebar is currently collapsed.
+    var projectSidebarIsCollapsed: Bool { get }
+
+    /// The list of projects shown in the sidebar.
+    var projectSidebarItems: [ProjectSidebarItem] { get }
+
+    /// The currently selected project in the sidebar.
+    var selectedProjectSidebarItemID: UUID? { get }
+
+    /// Select a project from the sidebar.
+    func selectProjectSidebarItem(id: UUID)
+
+    /// Show the picker for adding a new project.
+    func addProjectSidebarItem()
+
+    /// Remove a project from the sidebar.
+    func removeProjectSidebarItem(id: UUID)
+
+    /// Collapse or expand the project sidebar.
+    func toggleProjectSidebarCollapsed()
+
+    /// Tabs rendered in the main panel.
+    var mainPanelTabs: [MainPanelTabItem] { get }
+
+    /// The currently selected tab in the main panel.
+    var selectedMainPanelTabID: UUID? { get }
+
+    /// Create a new tab in the main panel.
+    func addMainPanelTab()
+
+    /// Select the active tab in the main panel.
+    func selectMainPanelTab(id: UUID)
+
+    /// Close a tab in the main panel.
+    func closeMainPanelTab(id: UUID)
+
+    /// Active running process entries grouped by project.
+    var runningProcessesByProjectID: [UUID: [RunningProcessItem]] { get }
+
+    /// Active running process count for a project.
+    func runningProcessCount(for projectID: UUID) -> Int
+
+    /// Whether the terminal overview overlay is visible.
+    var terminalOverviewIsShowing: Bool { get set }
+
+    /// Items to render in the terminal overview.
+    var terminalOverviewItems: [TerminalOverviewItem] { get }
+
+    /// Refresh overview contents when opening.
+    func refreshTerminalOverviewItems()
+
+    /// Activate a selected overview destination.
+    func activateTerminalOverviewItem(id: UUID)
+}
+
+struct ProjectSidebarItem: Identifiable, Codable, Hashable {
+    var id: UUID
+    var name: String
+    var path: String
+    var gitBranch: String?
+}
+
+struct MainPanelTabItem: Identifiable, Hashable {
+    var id: UUID
+    var title: String
+}
+
+struct RunningProcessItem: Identifiable, Hashable {
+    var id: UUID
+    var projectID: UUID
+    var tabID: UUID
+    var tabTitle: String
+    var primaryText: String
+    var secondaryText: String?
+}
+
+struct TerminalOverviewItem: Identifiable {
+    enum Status {
+        case running
+        case idle
+    }
+
+    var id: UUID
+    var controllerID: UUID
+    var projectID: UUID?
+    var tabID: UUID
+    var surfaceID: UUID
+    var title: String
+    var cwd: String?
+    var projectName: String?
+    var tabTitle: String
+    var status: Status
+    var thumbnail: NSImage?
 }
 
 /// The main terminal view. This terminal view supports splits.
@@ -120,6 +218,21 @@ struct TerminalView<ViewModel: TerminalViewModel>: View {
                 // Show update information above all else.
                 if viewModel.updateOverlayIsVisible {
                     UpdateOverlay()
+                }
+
+                if viewModel.terminalOverviewIsShowing {
+                    TerminalOverviewView(
+                        items: viewModel.terminalOverviewItems,
+                        onClose: {
+                            viewModel.terminalOverviewIsShowing = false
+                        },
+                        onSelect: { item in
+                            viewModel.activateTerminalOverviewItem(id: item.id)
+                        }
+                    )
+                    .onAppear {
+                        viewModel.refreshTerminalOverviewItems()
+                    }
                 }
             }
             .frame(maxWidth: .greatestFiniteMagnitude, maxHeight: .greatestFiniteMagnitude)

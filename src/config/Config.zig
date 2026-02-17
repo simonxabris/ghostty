@@ -6430,6 +6430,10 @@ pub const Keybinds = struct {
                 .{ .super = true }
             else
                 .{ .alt = true };
+            const project_mods: inputpkg.Mods = if (builtin.target.os.tag.isDarwin())
+                .{ .super = true, .ctrl = true }
+            else
+                .{ .ctrl = true, .alt = true };
 
             // Cmd/Alt+N for goto tab N
             const start: u21 = '1';
@@ -6489,6 +6493,72 @@ pub const Keybinds = struct {
                     // See comment above with the numeric goto_tab
                     .performable = !builtin.target.os.tag.isDarwin(),
                 },
+            );
+
+            // Cmd+Ctrl/Alt+Ctrl+[ and ] for previous/next project
+            try self.set.putFlags(
+                alloc,
+                .{
+                    .key = .{ .unicode = '[' },
+                    .mods = project_mods,
+                },
+                .{ .previous_project = {} },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{
+                    .key = .{ .unicode = ']' },
+                    .mods = project_mods,
+                },
+                .{ .next_project = {} },
+                .{ .performable = true },
+            );
+
+            // Cmd+Ctrl/Alt+Ctrl+N for goto project N
+            const project_start: u21 = '1';
+            const project_end: u21 = '9';
+            comptime var project_i: u21 = project_start;
+            inline while (project_i <= project_end) : (project_i += 1) {
+                try self.set.putFlags(
+                    alloc,
+                    .{
+                        .key = .{ .physical = @field(
+                            inputpkg.Key,
+                            std.fmt.comptimePrint("digit_{u}", .{project_i}),
+                        ) },
+                        .mods = project_mods,
+                    },
+                    .{ .goto_project = (project_i - project_start) + 1 },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{
+                        .key = .{ .unicode = project_i },
+                        .mods = project_mods,
+                    },
+                    .{ .goto_project = (project_i - project_start) + 1 },
+                    .{ .performable = true },
+                );
+            }
+            try self.set.putFlags(
+                alloc,
+                .{
+                    .key = .{ .physical = .digit_0 },
+                    .mods = project_mods,
+                },
+                .{ .last_project = {} },
+                .{ .performable = true },
+            );
+            try self.set.putFlags(
+                alloc,
+                .{
+                    .key = .{ .unicode = '0' },
+                    .mods = project_mods,
+                },
+                .{ .last_project = {} },
+                .{ .performable = true },
             );
         }
 

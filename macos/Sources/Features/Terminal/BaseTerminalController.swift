@@ -52,6 +52,33 @@ class BaseTerminalController: NSWindowController,
     /// Set if the terminal view should show the update overlay.
     @Published var updateOverlayIsVisible: Bool = false
 
+    /// Items rendered in the project sidebar.
+    @Published var projectSidebarItems: [ProjectSidebarItem] = []
+
+    /// Active selection in the project sidebar.
+    @Published var selectedProjectSidebarItemID: UUID? = nil
+
+    /// Whether the project sidebar is collapsed to a narrow toggle rail.
+    @Published var projectSidebarIsCollapsed: Bool = false
+
+    /// Tabs shown in the main panel.
+    @Published var mainPanelTabs: [MainPanelTabItem] = []
+
+    /// Active tab selection for the main panel.
+    @Published var selectedMainPanelTabID: UUID? = nil
+
+    /// Active running process entries grouped by project.
+    @Published var runningProcessesByProjectID: [UUID: [RunningProcessItem]] = [:]
+
+    /// Whether the terminal overview is visible.
+    @Published var terminalOverviewIsShowing: Bool = false
+
+    /// Overview items rendered by TerminalView.
+    @Published var terminalOverviewItems: [TerminalOverviewItem] = []
+
+    /// Controls whether the project sidebar is rendered at all.
+    var showsProjectSidebar: Bool { false }
+
     /// Whether the terminal surface should focus when the mouse is over it.
     var focusFollowsMouse: Bool {
         self.derivedConfig.focusFollowsMouse
@@ -274,6 +301,51 @@ class BaseTerminalController: NSWindowController,
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+    }
+
+    /// Override in subclasses that implement a project sidebar.
+    func selectProjectSidebarItem(id: UUID) {}
+
+    /// Override in subclasses that implement a project sidebar.
+    func addProjectSidebarItem() {}
+
+    /// Override in subclasses that implement a project sidebar.
+    func removeProjectSidebarItem(id: UUID) {}
+
+    /// Override in subclasses that implement a project sidebar.
+    func toggleProjectSidebarCollapsed() {
+        guard showsProjectSidebar else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            projectSidebarIsCollapsed.toggle()
+        }
+
+        if let focusedSurface {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: focusedSurface)
+            }
+        }
+    }
+
+    /// Override in subclasses that implement main panel tabs.
+    func addMainPanelTab() {}
+
+    /// Override in subclasses that implement main panel tabs.
+    func selectMainPanelTab(id: UUID) {}
+
+    /// Override in subclasses that implement main panel tabs.
+    func closeMainPanelTab(id: UUID) {}
+
+    func runningProcessCount(for projectID: UUID) -> Int {
+        runningProcessesByProjectID[projectID]?.count ?? 0
+    }
+
+    func refreshTerminalOverviewItems() {
+        terminalOverviewItems = []
+    }
+
+    func activateTerminalOverviewItem(id: UUID) {
+        _ = id
+        terminalOverviewIsShowing = false
     }
 
     /// Called when the surfaceTree variable changed.
@@ -1367,6 +1439,13 @@ class BaseTerminalController: NSWindowController,
 
     @IBAction func toggleCommandPalette(_ sender: Any?) {
         commandPaletteIsShowing.toggle()
+    }
+
+    @IBAction func toggleTabOverview(_ sender: Any?) {
+        terminalOverviewIsShowing.toggle()
+        if terminalOverviewIsShowing {
+            refreshTerminalOverviewItems()
+        }
     }
     
     @IBAction func find(_ sender: Any) {

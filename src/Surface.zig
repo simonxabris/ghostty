@@ -5619,6 +5619,22 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             },
         ),
 
+        inline .previous_project,
+        .next_project,
+        .last_project,
+        .goto_project,
+        => |v, tag| return try self.rt_app.performAction(
+            .{ .surface = self },
+            .goto_project,
+            switch (tag) {
+                .previous_project => .previous,
+                .next_project => .next,
+                .last_project => .last,
+                .goto_project => @enumFromInt(v),
+                else => comptime unreachable,
+            },
+        ),
+
         .move_tab => |position| return try self.rt_app.performAction(
             .{ .surface = self },
             .move_tab,

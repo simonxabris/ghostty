@@ -2,6 +2,11 @@
 
 A file for [guiding coding agents](https://agents.md/).
 
+## Fork Goal
+
+This fork adds a sidebar panel where project paths can be added and switched.
+Switching projects should keep the active terminal in the main panel.
+
 ## Commands
 
 - **Build:** `zig build`

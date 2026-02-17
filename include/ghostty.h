@@ -574,6 +574,13 @@ typedef enum {
   GHOSTTY_GOTO_TAB_LAST = -3,
 } ghostty_action_goto_tab_e;
 
+// apprt.action.GotoProject
+typedef enum {
+  GHOSTTY_GOTO_PROJECT_PREVIOUS = -1,
+  GHOSTTY_GOTO_PROJECT_NEXT = -2,
+  GHOSTTY_GOTO_PROJECT_LAST = -3,
+} ghostty_action_goto_project_e;
+
 // apprt.action.Fullscreen
 typedef enum {
   GHOSTTY_FULLSCREEN_NATIVE,
@@ -904,6 +911,7 @@ typedef enum {
   GHOSTTY_ACTION_SEARCH_TOTAL,
   GHOSTTY_ACTION_SEARCH_SELECTED,
   GHOSTTY_ACTION_READONLY,
+  GHOSTTY_ACTION_GOTO_PROJECT,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -911,6 +919,7 @@ typedef union {
   ghostty_action_fullscreen_e toggle_fullscreen;
   ghostty_action_move_tab_s move_tab;
   ghostty_action_goto_tab_e goto_tab;
+  ghostty_action_goto_project_e goto_project;
   ghostty_action_goto_split_e goto_split;
   ghostty_action_goto_window_e goto_window;
   ghostty_action_resize_split_s resize_split;

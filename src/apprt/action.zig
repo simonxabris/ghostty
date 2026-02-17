@@ -330,6 +330,10 @@ pub const Action = union(Key) {
     /// The readonly state of the surface has changed.
     readonly: Readonly,
 
+    /// Jump to a specific project. Must handle the scenario that the project
+    /// value is invalid.
+    goto_project: GotoProject,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -395,6 +399,7 @@ pub const Action = union(Key) {
         search_total,
         search_selected,
         readonly,
+        goto_project,
     };
 
     /// Sync with: ghostty_action_u
@@ -518,6 +523,16 @@ pub const MoveTab = extern struct {
 /// the index (zero-based) of the tab to jump to. Negative values are special
 /// values.
 pub const GotoTab = enum(c_int) {
+    previous = -1,
+    next = -2,
+    last = -3,
+    _,
+};
+
+/// The project to jump to. This is non-exhaustive so that integer values
+/// represent the index (zero-based) of the project to jump to. Negative
+/// values are special values.
+pub const GotoProject = enum(c_int) {
     previous = -1,
     next = -2,
     last = -3,

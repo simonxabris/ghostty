@@ -445,6 +445,10 @@ extension Ghostty.Notification {
     static let ghosttyGotoTab = Notification.Name("com.mitchellh.ghostty.gotoTab")
     static let GotoTabKey = ghosttyGotoTab.rawValue
 
+    /// Goto project. Has project index in the userinfo.
+    static let ghosttyGotoProject = Notification.Name("com.mitchellh.ghostty.gotoProject")
+    static let GotoProjectKey = ghosttyGotoProject.rawValue
+
     /// New tab. Has base surface config requested in userinfo.
     static let ghosttyNewTab = Notification.Name("com.mitchellh.ghostty.newTab")
 
@@ -453,6 +457,9 @@ extension Ghostty.Notification {
 
     /// Present terminal. Bring the surface's window to focus without activating the app.
     static let ghosttyPresentTerminal = Notification.Name("com.mitchellh.ghostty.presentTerminal")
+
+    /// Toggle terminal overview overlay.
+    static let ghosttyToggleTabOverview = Notification.Name("com.mitchellh.ghostty.toggleTabOverview")
 
     /// Toggle fullscreen of current window
     static let ghosttyToggleFullscreen = Notification.Name("com.mitchellh.ghostty.toggleFullscreen")

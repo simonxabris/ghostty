@@ -734,6 +734,10 @@ pub const Application = extern struct {
             .show_on_screen_keyboard => return Action.showOnScreenKeyboard(target),
             .command_finished => return Action.commandFinished(target, value),
             .readonly => return Action.setReadonly(target, value),
+            .goto_project => {
+                log.warn("unimplemented action={}", .{action});
+                return false;
+            },
 
             .start_search => Action.startSearch(target, value),
             .end_search => Action.endSearch(target),
